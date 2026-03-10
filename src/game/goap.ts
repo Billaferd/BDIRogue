@@ -1,0 +1,135 @@
+export type GOAPState = Record<string, boolean | number | string>;
+
+export interface GOAPAction {
+  name: string;
+  cost: number;
+  preconditions: Partial<GOAPState>;
+  effects: Partial<GOAPState>;
+  // function to execute the action in the game world
+  execute?: () => boolean;
+}
+
+interface Node {
+  state: GOAPState;
+  action: GOAPAction | null;
+  parent: Node | null;
+  g: number;
+  h: number;
+}
+
+export class GOAPPlanner {
+  plan(
+    startState: GOAPState,
+    goalState: Partial<GOAPState>,
+    actions: GOAPAction[],
+  ): GOAPAction[] | null {
+    const openList: Node[] = [];
+    const closedList: Node[] = [];
+
+    const startNode: Node = {
+      state: { ...startState },
+      action: null,
+      parent: null,
+      g: 0,
+      h: this.calculateHeuristic(startState, goalState),
+    };
+
+    openList.push(startNode);
+
+    while (openList.length > 0) {
+      // Sort by f = g + h
+      openList.sort((a, b) => a.g + a.h - (b.g + b.h));
+      const current = openList.shift()!;
+
+      if (this.isGoalMet(current.state, goalState)) {
+        return this.buildPlan(current);
+      }
+
+      closedList.push(current);
+
+      for (const action of actions) {
+        if (this.arePreconditionsMet(current.state, action.preconditions)) {
+          const nextState = { ...current.state, ...action.effects };
+
+          // Check if we already visited this state (simplified check)
+          const isClosed = closedList.some((n) =>
+            this.statesEqual(n.state, nextState),
+          );
+          if (isClosed) continue;
+
+          const g = current.g + action.cost;
+          const h = this.calculateHeuristic(nextState, goalState);
+
+          const existingNode = openList.find((n) =>
+            this.statesEqual(n.state, nextState),
+          );
+          if (existingNode) {
+            if (g < existingNode.g) {
+              existingNode.g = g;
+              existingNode.parent = current;
+              existingNode.action = action;
+            }
+          } else {
+            openList.push({
+              state: nextState,
+              action: action,
+              parent: current,
+              g,
+              h,
+            });
+          }
+        }
+      }
+    }
+
+    return null; // No plan found
+  }
+
+  private isGoalMet(state: GOAPState, goal: Partial<GOAPState>): boolean {
+    for (const key in goal) {
+      if (state[key] !== goal[key]) return false;
+    }
+    return true;
+  }
+
+  private arePreconditionsMet(
+    state: GOAPState,
+    preconditions: Partial<GOAPState>,
+  ): boolean {
+    for (const key in preconditions) {
+      if (state[key] !== preconditions[key]) return false;
+    }
+    return true;
+  }
+
+  private calculateHeuristic(
+    state: GOAPState,
+    goal: Partial<GOAPState>,
+  ): number {
+    let unmet = 0;
+    for (const key in goal) {
+      if (state[key] !== goal[key]) unmet++;
+    }
+    return unmet;
+  }
+
+  private statesEqual(s1: GOAPState, s2: GOAPState): boolean {
+    const keys1 = Object.keys(s1);
+    const keys2 = Object.keys(s2);
+    if (keys1.length !== keys2.length) return false;
+    for (const key of keys1) {
+      if (s1[key] !== s2[key]) return false;
+    }
+    return true;
+  }
+
+  private buildPlan(node: Node): GOAPAction[] {
+    const plan: GOAPAction[] = [];
+    let curr: Node | null = node;
+    while (curr && curr.action) {
+      plan.unshift(curr.action);
+      curr = curr.parent;
+    }
+    return plan;
+  }
+}

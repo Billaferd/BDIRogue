@@ -1,0 +1,5 @@
+{
+  "name": "Cognitive Rogue Simulation",
+  "description": "An autonomous agent navigating a roguelike using Knowledge Graphs, Bayesian Inference, BDI, and GOAP.",
+  "requestFramePermissions": []
+}
