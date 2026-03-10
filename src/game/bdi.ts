@@ -13,6 +13,7 @@ export interface EnvironmentData {
   potions: number;
   monsterVisible: boolean;
   newDiscovery: boolean;
+  explorationPercentage: number;
 }
 
 export class BDIAgent {
@@ -28,13 +29,15 @@ export class BDIAgent {
     const logs: string[] = [];
     const isHurt = env.hp < 60;
     const hasPotion = env.potions > 0;
+    const explorationPercentage = env.explorationPercentage || 0; // Assuming this is passed in env
 
     const oldMonsterThreat = this.beliefs.monster_threat;
 
     this.updateBeliefs({
       hp_low: isHurt,
       has_potion: hasPotion,
-      monster_threat: env.monsterVisible
+      monster_threat: env.monsterVisible,
+      has_unknown_tiles: explorationPercentage < 100
     });
 
     if (env.newDiscovery) {
@@ -61,7 +64,8 @@ export class BDIAgent {
     } else {
       if (descendDesire) descendDesire.priority = 10;
       if (getAmuletDesire) getAmuletDesire.priority = 10;
-      if (exploreDesire) exploreDesire.priority = 20;
+      // Priority scales inversely with percentage explored
+      if (exploreDesire) exploreDesire.priority = Math.max(10, 100 - explorationPercentage);
       if (healDesire) healDesire.priority = 90;
     }
 

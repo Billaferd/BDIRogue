@@ -1,21 +1,17 @@
 export type Position = { x: number; y: number };
 
-export type EntityType = 'rogue' | 'wall' | 'door' | 'key' | 'chest' | 'mimic' | 'amulet' | 'monster' | 'floor' | 'stairs_down' | 'health_potion';
+export type EntityTrait = 'blue' | 'high_viscosity' | 'large' | 'fast' | 'breathing' | 'suspicious' | 'locked' | 'open' | 'mimic' | 'amulet' | 'wall' | 'door' | 'floor' | 'stairs' | 'rogue' | 'key' | 'auditory_cadence_heavy' | 'auditory_cadence_light' | 'blood_splatter';
 
 export interface Entity {
   id: string;
-  type: EntityType;
+  traits: EntityTrait[];
   pos: Position;
+  lastPos?: Position;
   hp?: number;
   potions?: number;
-  isLocked?: boolean;
-  isOpen?: boolean;
-  isMimic?: boolean;
-  isBreathing?: boolean; // Evidence for Bayesian
-  suspiciousLocation?: boolean; // Evidence for Bayesian
-  hasKey?: boolean; // Does this chest have the key?
   isExplored?: boolean; // Has the agent seen this tile?
   isVisible?: boolean;  // Is it currently in FOV?
+  currentPath?: Position[]; // For incremental pathfinding
 }
 
 export interface GameState {
@@ -26,4 +22,5 @@ export interface GameState {
   log: string[];
   currentFloor: number;
   maxFloor: number;
+  frontierTiles: Position[];
 }

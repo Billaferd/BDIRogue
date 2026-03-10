@@ -26,54 +26,44 @@ export function GridMap({ state }: { state: GameState }) {
 
           // Prioritize non-floor, non-wall entities
           const topEntity =
-            entities.find((e) => e.type !== "floor" && e.type !== "wall") ||
-            entities.find((e) => e.type === "wall") ||
+            entities.find((e) => !e.traits.includes("floor") && !e.traits.includes("wall")) ||
+            entities.find((e) => e.traits.includes("wall")) ||
             floor;
 
           let content = null;
           if (topEntity) {
-            switch (topEntity.type) {
-              case "rogue":
-                content = (
-                  <User className="text-emerald-400 w-full h-full p-1 drop-shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
-                );
-                break;
-              case "wall":
-                content = <div className="bg-slate-700 w-full h-full" />;
-                break;
-              case "door":
-                content = topEntity.isOpen ? (
-                  <DoorOpen className="text-amber-600 w-full h-full p-1" />
-                ) : (
-                  <DoorClosed className="text-amber-700 w-full h-full p-1" />
-                );
-                break;
-              case "chest":
-                content = <Box className="text-amber-400 w-full h-full p-1" />;
-                break;
-              case "amulet":
-                content = (
-                  <Gem className="text-fuchsia-400 w-full h-full p-1 drop-shadow-[0_0_8px_rgba(232,121,249,0.8)]" />
-                );
-                break;
-              case "monster":
-                content = (
-                  <Skull className="text-rose-500 w-full h-full p-1 drop-shadow-[0_0_8px_rgba(244,63,94,0.8)]" />
-                );
-                break;
-              case "health_potion":
-                content = (
-                  <FlaskConical className="text-red-400 w-full h-full p-1.5 drop-shadow-[0_0_8px_rgba(248,113,113,0.8)]" />
-                );
-                break;
-              case "stairs_down":
-                content = (
-                  <ArrowDownSquare className="text-indigo-400 w-full h-full p-1 drop-shadow-[0_0_8px_rgba(129,140,248,0.8)]" />
-                );
-                break;
-              case "floor":
-                content = <div className="bg-slate-900 w-full h-full" />;
-                break;
+            if (topEntity.traits.includes("rogue")) {
+              content = (
+                <User className="text-emerald-400 w-full h-full p-1 drop-shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+              );
+            } else if (topEntity.traits.includes("wall")) {
+              content = <div className="bg-slate-700 w-full h-full" />;
+            } else if (topEntity.traits.includes("door")) {
+              content = topEntity.traits.includes("open") ? (
+                <DoorOpen className="text-amber-600 w-full h-full p-1" />
+              ) : (
+                <DoorClosed className="text-amber-700 w-full h-full p-1" />
+              );
+            } else if (topEntity.traits.includes("mimic")) {
+              content = <Box className="text-amber-400 w-full h-full p-1" />;
+            } else if (topEntity.traits.includes("amulet")) {
+              content = (
+                <Gem className="text-fuchsia-400 w-full h-full p-1 drop-shadow-[0_0_8px_rgba(232,121,249,0.8)]" />
+              );
+            } else if (topEntity.traits.includes("large") && topEntity.traits.includes("fast")) {
+              content = (
+                <Skull className="text-rose-500 w-full h-full p-1 drop-shadow-[0_0_8px_rgba(244,63,94,0.8)]" />
+              );
+            } else if (topEntity.traits.includes("blue") && topEntity.traits.includes("high_viscosity")) {
+              content = (
+                <FlaskConical className="text-red-400 w-full h-full p-1.5 drop-shadow-[0_0_8px_rgba(248,113,113,0.8)]" />
+              );
+            } else if (topEntity.traits.includes("stairs")) {
+              content = (
+                <ArrowDownSquare className="text-indigo-400 w-full h-full p-1 drop-shadow-[0_0_8px_rgba(129,140,248,0.8)]" />
+              );
+            } else if (topEntity.traits.includes("floor")) {
+              content = <div className="bg-slate-900 w-full h-full" />;
             }
           }
 

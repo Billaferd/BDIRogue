@@ -1,45 +1,23 @@
+import { Position } from "./types";
+
 export class BayesianInference {
-  priorMimic = 0.1;
+  priors: Record<string, number> = {};
 
-  update(isBreathing: boolean, isSuspicious: boolean): number {
-    let pMimic = this.priorMimic;
+  updatePrior(hypothesisId: string, isTrue: boolean) {
+    const prior = this.priors[hypothesisId] || 0.1;
+    this.priors[hypothesisId] = (prior * 0.9) + (isTrue ? 0.1 : 0);
+  }
 
-    // Update for breathing
-    const pBreathingGivenMimic = 0.8;
-    const pBreathingGivenNotMimic = 0.05;
+  updateBelief(hypothesisId: string, evidence: Record<string, boolean>, likelihoods: Record<string, number>, coordinates?: Position) {
+    let pH = this.priors[hypothesisId] || 0.1;
 
-    if (isBreathing) {
-      pMimic =
-        (pBreathingGivenMimic * pMimic) /
-        (pBreathingGivenMimic * pMimic +
-          pBreathingGivenNotMimic * (1 - pMimic));
-    } else {
-      const pNotBreathingGivenMimic = 1 - pBreathingGivenMimic;
-      const pNotBreathingGivenNotMimic = 1 - pBreathingGivenNotMimic;
-      pMimic =
-        (pNotBreathingGivenMimic * pMimic) /
-        (pNotBreathingGivenMimic * pMimic +
-          pNotBreathingGivenNotMimic * (1 - pMimic));
+    for (const [signal, value] of Object.entries(evidence)) {
+      const pEGivenH = value ? likelihoods[`${signal}_true`] : (1 - likelihoods[`${signal}_true`]);
+      const pEGivenNotH = value ? likelihoods[`${signal}_false`] : (1 - likelihoods[`${signal}_false`]);
+      if (pEGivenH === undefined || pEGivenNotH === undefined) continue;
+
+      pH = (pEGivenH * pH) / (pEGivenH * pH + pEGivenNotH * (1 - pH));
     }
-
-    // Update for suspicious
-    const pSuspiciousGivenMimic = 0.7;
-    const pSuspiciousGivenNotMimic = 0.2;
-
-    if (isSuspicious) {
-      pMimic =
-        (pSuspiciousGivenMimic * pMimic) /
-        (pSuspiciousGivenMimic * pMimic +
-          pSuspiciousGivenNotMimic * (1 - pMimic));
-    } else {
-      const pNotSuspiciousGivenMimic = 1 - pSuspiciousGivenMimic;
-      const pNotSuspiciousGivenNotMimic = 1 - pSuspiciousGivenNotMimic;
-      pMimic =
-        (pNotSuspiciousGivenMimic * pMimic) /
-        (pNotSuspiciousGivenMimic * pMimic +
-          pNotSuspiciousGivenNotMimic * (1 - pMimic));
-    }
-
-    return pMimic;
+    this.priors[hypothesisId] = pH;
   }
 }

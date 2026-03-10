@@ -1,4 +1,7 @@
 export type GOAPState = Record<string, boolean | number | string>;
+// Added reduce_unknown_tiles for exploration goal
+// export type GOAPState = Record<string, boolean | number | string> & { reduce_unknown_tiles: boolean };
+
 
 export type Intent = 
   | { type: 'MOVE'; dx: number; dy: number; reason?: string }
@@ -46,7 +49,7 @@ export class GOAPPlanner {
       action: null,
       parent: null,
       g: 0,
-      h: this.calculateHeuristic(startState, goalState),
+      h: this.calculateHeuristic(startState, goalState, actions),
     };
 
     openList.push(startNode);
@@ -73,7 +76,7 @@ export class GOAPPlanner {
           if (isClosed) continue;
 
           const g = current.g + action.cost;
-          const h = this.calculateHeuristic(nextState, goalState);
+          const h = this.calculateHeuristic(nextState, goalState, actions);
 
           const existingNode = openList.find((n) =>
             this.statesEqual(n.state, nextState),
@@ -120,12 +123,22 @@ export class GOAPPlanner {
   private calculateHeuristic(
     state: GOAPState,
     goal: Partial<GOAPState>,
+    actions: GOAPAction[]
   ): number {
-    let unmet = 0;
+    let cost = 0;
     for (const key in goal) {
-      if (state[key] !== goal[key]) unmet++;
+      if (state[key] !== goal[key]) {
+        // Find the cheapest action that satisfies this goal condition
+        const satisfyingActions = actions.filter(a => a.effects[key] === goal[key]);
+        if (satisfyingActions.length > 0) {
+          cost += Math.min(...satisfyingActions.map(a => a.cost));
+        } else {
+          // If no action can satisfy this, it's a very high cost
+          cost += 100; 
+        }
+      }
     }
-    return unmet;
+    return cost;
   }
 
   private statesEqual(s1: GOAPState, s2: GOAPState): boolean {
