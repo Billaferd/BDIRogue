@@ -2,7 +2,7 @@ import { Entity, GameState, Position } from './types';
 import { KnowledgeGraph } from './knowledgeGraph';
 import { BayesianInference } from './bayesian';
 import { BDIAgent, Desire } from './bdi';
-import { GOAPAction } from './goap';
+import { GOAPAction, Intent } from './goap';
 import * as ROT from 'rot-js';
 
 export class GameEngine {
@@ -23,7 +23,7 @@ export class GameEngine {
     
     this.state = this.initializeMap(1);
     this.setupAgent();
-    this.observeEnvironment(); // Initial observation
+    this.senseAndPerceive(); // Initial observation
   }
 
   initializeMap(floorNumber: number, previousRogue?: Entity): GameState {
@@ -259,8 +259,23 @@ export class GameEngine {
     this.kg.remove('rogue', 'is_at', `${this.state.rogue.pos.x - dx},${this.state.rogue.pos.y - dy}`);
     this.kg.add('rogue', 'is_at', `${newPos.x},${newPos.y}`);
     
-    this.observeEnvironment();
+    this.senseAndPerceive();
     return true;
+  }
+
+  senseAndPerceive() {
+    const { newDiscovery, monsterVisible } = this.observeEnvironment();
+
+    const envData = {
+      hp: this.state.rogue.hp || 0,
+      maxHp: 100,
+      potions: this.state.rogue.potions || 0,
+      monsterVisible,
+      newDiscovery
+    };
+
+    const { logMessages } = this.bdi.perceive(envData);
+    logMessages.forEach(msg => this.log(msg));
   }
 
   observeEnvironment() {
@@ -339,18 +354,7 @@ export class GameEngine {
       });
     });
 
-    if (newDiscovery) {
-      this.log("New entity spotted! Interrupting current plan.");
-      this.bdi.currentPlan = [];
-    }
-
-    if (monsterVisible !== this.bdi.beliefs.monster_threat) {
-      this.bdi.updateBeliefs({ monster_threat: monsterVisible });
-      if (monsterVisible) {
-        this.log("Monster threat detected! Replanning for survival.");
-        this.bdi.currentPlan = [];
-      }
-    }
+    return { newDiscovery, monsterVisible };
   }
 
   findPath(start: Position, goal: Position | ((pos: Position) => boolean), ignoreDanger = false): Position[] | null {
@@ -431,14 +435,13 @@ export class GameEngine {
     }
   }
 
-  stepTowards(target: Position, ignoreDanger = false): boolean {
+  getNextStepTowards(target: Position, ignoreDanger = false): {dx: number, dy: number} | null {
     const path = this.findPath(this.state.rogue.pos, target, ignoreDanger);
     if (path && path.length > 0) {
       const nextStep = path[0];
-      this.moveRogue(nextStep.x - this.state.rogue.pos.x, nextStep.y - this.state.rogue.pos.y);
-      return true;
+      return { dx: nextStep.x - this.state.rogue.pos.x, dy: nextStep.y - this.state.rogue.pos.y };
     }
-    return false;
+    return null;
   }
 
   generateActions(): GOAPAction[] {
@@ -452,16 +455,9 @@ export class GameEngine {
       effects: { hp_low: false },
       execute: () => {
         if (this.state.rogue.potions && this.state.rogue.potions > 0) {
-          this.state.rogue.potions--;
-          this.state.rogue.hp = Math.min(100, (this.state.rogue.hp || 0) + 50);
-          this.log(`Drank a potion! HP is now ${this.state.rogue.hp}. Potions left: ${this.state.rogue.potions}`);
-          this.bdi.updateBeliefs({ 
-            hp_low: this.state.rogue.hp < 60,
-            has_potion: this.state.rogue.potions > 0
-          });
-          return true;
+          return { intent: { type: 'HEAL' }, status: 'completed' };
         }
-        return false;
+        return { intent: null, status: 'failed' };
       }
     });
 
@@ -477,17 +473,13 @@ export class GameEngine {
           execute: () => {
             const dist = Math.max(Math.abs(this.state.rogue.pos.x - potion.pos.x), Math.abs(this.state.rogue.pos.y - potion.pos.y));
             if (dist > 0) {
-              this.log(`Moving towards potion...`);
-              const moved = this.stepTowards(potion.pos);
-              if (!moved) return true;
-              return false;
+              const step = this.getNextStepTowards(potion.pos);
+              if (step) {
+                return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: `Moving towards potion` }, status: 'in_progress' };
+              }
+              return { intent: null, status: 'failed' };
             } else {
-              this.state.rogue.potions = (this.state.rogue.potions || 0) + 1;
-              this.bdi.updateBeliefs({ has_potion: true, [`${potion.id}_collected`]: true });
-              this.log(`Picked up a health potion! Total: ${this.state.rogue.potions}`);
-              // Remove potion from map
-              this.state.entities = this.state.entities.filter(e => e.id !== potion.id);
-              return true;
+              return { intent: { type: 'PICK_UP', targetId: potion.id }, status: 'completed' };
             }
           }
         });
@@ -507,20 +499,13 @@ export class GameEngine {
         execute: () => {
           const dist = Math.max(Math.abs(this.state.rogue.pos.x - monster.pos.x), Math.abs(this.state.rogue.pos.y - monster.pos.y));
           if (dist > 1) {
-            this.log("Charging at monster...");
-            const moved = this.stepTowards(monster.pos, true);
-            if (!moved) return true; // replan
-            return false;
-          } else {
-            this.log("Attacking monster!");
-            monster.hp! -= 15;
-            if (monster.hp! <= 0) {
-              this.log("Monster defeated!");
-              this.bdi.updateBeliefs({ monster_threat: false });
-              monster.type = 'floor'; // turn into corpse/floor
-              return true;
+            const step = this.getNextStepTowards(monster.pos, true);
+            if (step) {
+              return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: "Charging at monster" }, status: 'in_progress' };
             }
-            return false; // still fighting
+            return { intent: null, status: 'failed' };
+          } else {
+            return { intent: { type: 'ATTACK', targetId: monster.id }, status: 'completed' };
           }
         }
       });
@@ -531,7 +516,6 @@ export class GameEngine {
         preconditions: { monster_threat: true },
         effects: { monster_threat: false },
         execute: () => {
-          this.log("Fleeing from monster!");
           const dx = this.state.rogue.pos.x - monster.pos.x;
           const dy = this.state.rogue.pos.y - monster.pos.y;
           
@@ -566,17 +550,10 @@ export class GameEngine {
                 return distB - distA;
              });
              
-             this.moveRogue(safeMoves[0].x, safeMoves[0].y);
+             return { intent: { type: 'MOVE', dx: safeMoves[0].x, dy: safeMoves[0].y, reason: "Fleeing from monster" }, status: 'completed' };
           } else {
-             this.log("Cornered! Must fight!");
-             monster.hp! -= 15;
-             if (monster.hp! <= 0) {
-               this.log("Monster defeated in desperation!");
-               this.bdi.updateBeliefs({ monster_threat: false });
-               monster.type = 'floor';
-             }
+             return { intent: { type: 'ATTACK', targetId: monster.id }, status: 'completed' };
           }
-          return true; // Force replan
         }
       });
     }
@@ -593,16 +570,13 @@ export class GameEngine {
           execute: () => {
             const dist = Math.max(Math.abs(this.state.rogue.pos.x - door.pos.x), Math.abs(this.state.rogue.pos.y - door.pos.y));
             if (dist > 1) {
-              this.log(`Moving towards ${door.id}...`);
-              const moved = this.stepTowards(door.pos);
-              if (!moved) return true; // Force replan
-              return false; // Action not complete yet
+              const step = this.getNextStepTowards(door.pos);
+              if (step) {
+                return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: `Moving towards ${door.id}` }, status: 'in_progress' };
+              }
+              return { intent: null, status: 'failed' };
             } else {
-              door.isLocked = false;
-              door.isOpen = true;
-              this.bdi.updateBeliefs({ door_unlocked: true });
-              this.log(`Unlocked ${door.id}!`);
-              return true;
+              return { intent: { type: 'OPEN_DOOR', targetId: door.id }, status: 'completed' };
             }
           }
         });
@@ -620,14 +594,13 @@ export class GameEngine {
         execute: () => {
           const dist = Math.max(Math.abs(this.state.rogue.pos.x - stairs.pos.x), Math.abs(this.state.rogue.pos.y - stairs.pos.y));
           if (dist > 0) {
-            this.log("Moving towards stairs...");
-            const moved = this.stepTowards(stairs.pos);
-            if (!moved) return true;
-            return false;
+            const step = this.getNextStepTowards(stairs.pos);
+            if (step) {
+              return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: "Moving towards stairs" }, status: 'in_progress' };
+            }
+            return { intent: null, status: 'failed' };
           } else {
-            this.bdi.updateBeliefs({ floor_cleared: true });
-            this.log("Descended the stairs!");
-            return true;
+            return { intent: { type: 'DESCEND' }, status: 'completed' };
           }
         }
       });
@@ -644,14 +617,13 @@ export class GameEngine {
         execute: () => {
           const dist = Math.max(Math.abs(this.state.rogue.pos.x - amulet.pos.x), Math.abs(this.state.rogue.pos.y - amulet.pos.y));
           if (dist > 0) {
-            this.log("Moving towards amulet...");
-            const moved = this.stepTowards(amulet.pos);
-            if (!moved) return true;
-            return false;
+            const step = this.getNextStepTowards(amulet.pos);
+            if (step) {
+              return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: "Moving towards amulet" }, status: 'in_progress' };
+            }
+            return { intent: null, status: 'failed' };
           } else {
-            this.bdi.updateBeliefs({ has_amulet: true });
-            this.log("Got the Amulet! We win!");
-            return true;
+            return { intent: { type: 'PICK_UP', targetId: amulet.id }, status: 'completed' };
           }
         }
       });
@@ -671,31 +643,17 @@ export class GameEngine {
           effects: { [`${chestId}_opened`]: true, has_key: true },
           execute: () => {
             const chest = this.state.entities.find(e => e.id === chestId);
-            if (!chest) return false;
+            if (!chest) return { intent: null, status: 'failed' };
 
             const dist = Math.max(Math.abs(this.state.rogue.pos.x - chest.pos.x), Math.abs(this.state.rogue.pos.y - chest.pos.y));
             if (dist > 1) {
-              this.log(`Moving towards ${chestId}...`);
-              const moved = this.stepTowards(chest.pos);
-              if (!moved) return true;
-              return false;
-            } else {
-              this.bdi.updateBeliefs({ [`${chestId}_opened`]: true });
-              if (chest.isMimic) {
-                this.log(`Oh no! ${chestId} was a Mimic!`);
-                this.state.rogue.hp! -= 50;
-                this.bdi.updateBeliefs({ hp_low: this.state.rogue.hp! < 60 });
-                if (this.state.rogue.hp! <= 0) {
-                  this.bdi.updateBeliefs({ is_alive: false });
-                  this.log("You died.");
-                }
-              } else if (chest.hasKey) {
-                this.bdi.updateBeliefs({ has_key: true });
-                this.log(`Found a key in ${chestId}!`);
-              } else {
-                this.log(`${chestId} was empty.`);
+              const step = this.getNextStepTowards(chest.pos);
+              if (step) {
+                return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: `Moving towards ${chestId}` }, status: 'in_progress' };
               }
-              return true;
+              return { intent: null, status: 'failed' };
+            } else {
+              return { intent: { type: 'OPEN_CHEST', targetId: chestId }, status: 'completed' };
             }
           }
         });
@@ -718,11 +676,9 @@ export class GameEngine {
 
           if (path && path.length > 0) {
             const nextStep = path[0];
-            this.moveRogue(nextStep.x - this.state.rogue.pos.x, nextStep.y - this.state.rogue.pos.y);
-            this.log("Exploring safely...");
+            return { intent: { type: 'EXPLORE', dx: nextStep.x - this.state.rogue.pos.x, dy: nextStep.y - this.state.rogue.pos.y, reason: "Exploring safely" }, status: 'completed' }; // completed because it's a single step of exploration
           } else {
             // Fallback if no safe unexplored tiles
-            this.log("Nowhere safe left to explore! Taking risks...");
             const riskyPath = this.findPath(this.state.rogue.pos, (pos) => {
                const floor = this.state.grid[pos.y][pos.x];
                return !floor.isExplored;
@@ -730,18 +686,95 @@ export class GameEngine {
 
             if (riskyPath && riskyPath.length > 0) {
                const nextStep = riskyPath[0];
-               this.moveRogue(nextStep.x - this.state.rogue.pos.x, nextStep.y - this.state.rogue.pos.y);
+               return { intent: { type: 'EXPLORE', dx: nextStep.x - this.state.rogue.pos.x, dy: nextStep.y - this.state.rogue.pos.y, reason: "Taking risks to explore" }, status: 'completed' };
             } else {
-               this.log("Map fully explored.");
                this.bdi.updateBeliefs({ floor_fully_explored: true });
+               return { intent: null, status: 'failed' };
             }
           }
-          return true; // Force replan after moving
         }
       });
     }
 
     return actions;
+  }
+
+  resolveIntent(intent: Intent) {
+    switch (intent.type) {
+      case 'MOVE':
+      case 'EXPLORE':
+        this.moveRogue(intent.dx, intent.dy);
+        break;
+      case 'HEAL':
+        if (this.state.rogue.potions! > 0) {
+          this.state.rogue.potions!--;
+          this.state.rogue.hp = Math.min(100, (this.state.rogue.hp || 0) + 50);
+          this.log(`Drank a potion! HP is now ${this.state.rogue.hp}. Potions left: ${this.state.rogue.potions}`);
+          this.bdi.updateBeliefs({ 
+            hp_low: this.state.rogue.hp < 60,
+            has_potion: this.state.rogue.potions > 0
+          });
+        }
+        break;
+      case 'DESCEND':
+        this.bdi.updateBeliefs({ floor_cleared: true });
+        this.log("Descended the stairs!");
+        break;
+      case 'ATTACK': {
+        const monster = this.state.entities.find(e => e.id === intent.targetId);
+        if (monster && monster.hp! > 0) {
+          this.log("Attacking monster!");
+          monster.hp! -= 15;
+          if (monster.hp! <= 0) {
+            this.log("Monster defeated!");
+            this.bdi.updateBeliefs({ monster_threat: false });
+            monster.type = 'floor'; // turn into corpse/floor
+          }
+        }
+        break;
+      }
+      case 'OPEN_DOOR': {
+        const door = this.state.entities.find(e => e.id === intent.targetId);
+        if (door && !door.isOpen) {
+          door.isLocked = false;
+          door.isOpen = true;
+          this.bdi.updateBeliefs({ door_unlocked: true });
+          this.log(`Unlocked ${door.id}!`);
+        }
+        break;
+      }
+      case 'PICK_UP': {
+        const potion = this.state.entities.find(e => e.id === intent.targetId);
+        if (potion) {
+          this.state.rogue.potions = (this.state.rogue.potions || 0) + 1;
+          this.bdi.updateBeliefs({ has_potion: true, [`${potion.id}_collected`]: true });
+          this.log(`Picked up a health potion! Total: ${this.state.rogue.potions}`);
+          this.state.entities = this.state.entities.filter(e => e.id !== potion.id);
+        }
+        break;
+      }
+      case 'OPEN_CHEST': {
+        const chest = this.state.entities.find(e => e.id === intent.targetId);
+        if (chest) {
+          this.bdi.updateBeliefs({ [`${chest.id}_opened`]: true });
+          if (chest.isMimic) {
+            this.log(`Oh no! ${chest.id} was a Mimic!`);
+            this.state.rogue.hp! -= 50;
+            this.bdi.updateBeliefs({ hp_low: this.state.rogue.hp! < 60 });
+            if (this.state.rogue.hp! <= 0) {
+              this.bdi.updateBeliefs({ is_alive: false });
+              this.log("You died.");
+            }
+          } else if (chest.hasKey) {
+            this.bdi.updateBeliefs({ has_key: true });
+            this.log(`Found a key in ${chest.id}!`);
+          } else {
+            this.log(`${chest.id} was empty.`);
+          }
+        }
+        break;
+      }
+    }
   }
 
   tick() {
@@ -751,26 +784,7 @@ export class GameEngine {
     this.state.turn++;
     
     // 1. Sense
-    this.observeEnvironment();
-
-    // Dynamically adjust priorities based on health
-    const isHurt = this.state.rogue.hp! < 60;
-    const descendDesire = this.bdi.desires.find(d => d.name === 'Descend');
-    const exploreDesire = this.bdi.desires.find(d => d.name === 'Explore Floor');
-    const getAmuletDesire = this.bdi.desires.find(d => d.name === 'Get Amulet');
-    const healDesire = this.bdi.desires.find(d => d.name === 'Heal');
-
-    if (isHurt) {
-      if (descendDesire) descendDesire.priority = 95;
-      if (getAmuletDesire) getAmuletDesire.priority = 95;
-      if (exploreDesire) exploreDesire.priority = 10;
-      if (healDesire) healDesire.priority = this.bdi.beliefs.has_potion ? 98 : 80;
-    } else {
-      if (descendDesire) descendDesire.priority = 10;
-      if (getAmuletDesire) getAmuletDesire.priority = 10;
-      if (exploreDesire) exploreDesire.priority = 20;
-      if (healDesire) healDesire.priority = 90;
-    }
+    this.senseAndPerceive();
 
     // 2. Think
     const actions = this.generateActions();
@@ -791,16 +805,11 @@ export class GameEngine {
     }
 
     // 3. Act
-    if (this.bdi.currentPlan.length > 0) {
-      const action = this.bdi.currentPlan[0];
-      if (action.execute) {
-        const success = action.execute();
-        if (success) {
-          this.bdi.currentPlan.shift(); // Remove executed action
-          // Force replan after an action completes to ensure we adapt to new knowledge
-          this.bdi.currentPlan = []; 
-        }
-      }
+    const intent = this.bdi.executeNextAction();
+    if (intent) {
+      this.resolveIntent(intent);
+      // Force replan after an action completes to ensure we adapt to new knowledge
+      this.bdi.currentPlan = []; 
     }
 
     // 4. Environment / Monster Turn
@@ -841,7 +850,7 @@ export class GameEngine {
       this.bdi.currentPlan = [];
       this.bdi.intention = null;
       this.setupAgent();
-      this.observeEnvironment();
+      this.senseAndPerceive();
     }
 
     this.onUpdate();

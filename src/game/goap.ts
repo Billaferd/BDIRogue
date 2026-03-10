@@ -1,12 +1,27 @@
 export type GOAPState = Record<string, boolean | number | string>;
 
+export type Intent = 
+  | { type: 'MOVE'; dx: number; dy: number; reason?: string }
+  | { type: 'ATTACK'; targetId: string }
+  | { type: 'HEAL' }
+  | { type: 'OPEN_DOOR'; targetId: string }
+  | { type: 'OPEN_CHEST'; targetId: string }
+  | { type: 'PICK_UP'; targetId: string }
+  | { type: 'DESCEND' }
+  | { type: 'EXPLORE'; dx: number; dy: number; reason?: string };
+
+export type ActionResponse = {
+  intent: Intent | null;
+  status: 'completed' | 'in_progress' | 'failed';
+};
+
 export interface GOAPAction {
   name: string;
   cost: number;
   preconditions: Partial<GOAPState>;
   effects: Partial<GOAPState>;
   // function to execute the action in the game world
-  execute?: () => boolean;
+  execute?: () => ActionResponse;
 }
 
 interface Node {
