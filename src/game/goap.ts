@@ -11,7 +11,8 @@ export type Intent =
   | { type: 'OPEN_CHEST'; targetId: string }
   | { type: 'PICK_UP'; targetId: string }
   | { type: 'DESCEND' }
-  | { type: 'EXPLORE'; dx: number; dy: number; reason?: string };
+  | { type: 'EXPLORE'; dx: number; dy: number; reason?: string }
+  | { type: 'DESTROY'; targetId: string };
 
 export type ActionResponse = {
   intent: Intent | null;
@@ -40,6 +41,7 @@ export class GOAPPlanner {
     startState: GOAPState,
     goalState: Partial<GOAPState>,
     actions: GOAPAction[],
+    distanceCalculator?: (targetId: string) => number
   ): GOAPAction[] | null {
     const openList: Node[] = [];
     const closedList: Node[] = [];
@@ -49,7 +51,7 @@ export class GOAPPlanner {
       action: null,
       parent: null,
       g: 0,
-      h: this.calculateHeuristic(startState, goalState, actions),
+      h: this.calculateHeuristic(startState, goalState, actions, distanceCalculator),
     };
 
     openList.push(startNode);
@@ -76,7 +78,7 @@ export class GOAPPlanner {
           if (isClosed) continue;
 
           const g = current.g + action.cost;
-          const h = this.calculateHeuristic(nextState, goalState, actions);
+          const h = this.calculateHeuristic(nextState, goalState, actions, distanceCalculator);
 
           const existingNode = openList.find((n) =>
             this.statesEqual(n.state, nextState),
@@ -123,7 +125,8 @@ export class GOAPPlanner {
   private calculateHeuristic(
     state: GOAPState,
     goal: Partial<GOAPState>,
-    actions: GOAPAction[]
+    actions: GOAPAction[],
+    distanceCalculator?: (targetId: string) => number
   ): number {
     let cost = 0;
     for (const key in goal) {
@@ -131,7 +134,23 @@ export class GOAPPlanner {
         // Find the cheapest action that satisfies this goal condition
         const satisfyingActions = actions.filter(a => a.effects[key] === goal[key]);
         if (satisfyingActions.length > 0) {
-          cost += Math.min(...satisfyingActions.map(a => a.cost));
+          let minCost = Math.min(...satisfyingActions.map(a => a.cost));
+          
+          // Add distance penalty if applicable
+          if (distanceCalculator) {
+            // Try to find a targetId in the action name or effects
+            for (const action of satisfyingActions) {
+              const targetIdMatch = action.name.match(/ (chest_\d+|potion_\d+|monster_\d+|barricade_\d+|explosive_\d+)/);
+              if (targetIdMatch) {
+                const targetId = targetIdMatch[1];
+                const dist = distanceCalculator(targetId);
+                if (dist !== Infinity) {
+                  minCost += dist;
+                }
+              }
+            }
+          }
+          cost += minCost;
         } else {
           // If no action can satisfy this, it's a very high cost
           cost += 100; 

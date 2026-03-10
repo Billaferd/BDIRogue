@@ -9,6 +9,14 @@ export class KnowledgeGraph {
     }
   }
 
+  set(subject: string, predicate: string, object: string) {
+    // Remove all existing triples with the same subject and predicate
+    this.triples = this.triples.filter(
+      (t) => !(t.subject === subject && t.predicate === predicate),
+    );
+    this.triples.push({ subject, predicate, object });
+  }
+
   has(subject: string, predicate: string, object: string) {
     return this.triples.some(
       (t) =>

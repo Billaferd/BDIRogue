@@ -125,6 +125,31 @@ export class GameEngine {
     let potionCount = 1;
 
     const reachableRoomsArr = Array.from(reachableRooms);
+
+    // 7. Place Barricade and Explosive (Floor 5 only for maximum drama)
+    if (floorNumber === maxFloor) {
+      // Place barricade near the amulet
+      const targetPos = targetRoom.getCenter();
+      entities.push({
+        id: 'barricade_1',
+        traits: ['barricade'],
+        pos: { x: targetPos[0] - 1, y: targetPos[1] },
+        isExplored: false,
+        isVisible: false
+      });
+
+      // Place explosive in a random reachable room
+      const explosiveRoom = reachableRoomsArr[Math.floor(Math.random() * reachableRoomsArr.length)];
+      const expPos = explosiveRoom.getCenter();
+      entities.push({
+        id: 'explosive_1',
+        traits: ['explosive'],
+        pos: { x: expPos[0] + 1, y: expPos[1] + 1 },
+        isExplored: false,
+        isVisible: false
+      });
+    }
+
     const keyRoom = reachableRoomsArr.length > 0 ? reachableRoomsArr[0] : startRoom;
     
     // We place chests in all rooms except the target room (unless it's the only room)
@@ -140,10 +165,18 @@ export class GameEngine {
       const room = sortedRoomsForChests[i];
       const center = room.getCenter();
       
+      const traits: any[] = ['chest'];
+      if (Math.random() < 0.2) {
+        traits.push('mimic');
+      }
+      if (room === keyRoom) {
+        traits.push('key');
+      }
+
       // Chests
       entities.push({
         id: `chest_${chestCount}`,
-        traits: ['locked', 'mimic'], // Simplified for now
+        traits: traits as any,
         pos: { x: center[0], y: center[1] },
         isExplored: false,
         isVisible: false
@@ -191,7 +224,8 @@ export class GameEngine {
       log: this.state ? this.state.log : [`You enter the dungeon. Floor ${floorNumber} of ${maxFloor}.`],
       currentFloor: floorNumber,
       maxFloor: maxFloor,
-      frontierTiles: []
+      frontierTiles: [],
+      thoughts: []
     };
   }
 
@@ -209,7 +243,9 @@ export class GameEngine {
       hp_low: (this.state.rogue.hp || 100) < 60,
       has_potion: (this.state.rogue.potions || 0) > 0,
       floor_cleared: false,
-      has_unknown_tiles: true
+      has_unknown_tiles: true,
+      has_explosive: false,
+      barricade_destroyed: true
     };
     for (let i = 1; i <= chestCount; i++) {
       initialBeliefs[`chest_${i}_opened`] = false;
@@ -230,7 +266,7 @@ export class GameEngine {
     }
 
     // Initial Knowledge
-    this.kg.add('rogue', 'is_at', `${this.state.rogue.pos.x},${this.state.rogue.pos.y}`);
+    this.kg.set('rogue', 'is_at', `${this.state.rogue.pos.x},${this.state.rogue.pos.y}`);
   }
 
   log(msg: string) {
@@ -246,22 +282,29 @@ export class GameEngine {
     while (queue.length > 0) {
       const {pos, dist} = queue.shift()!;
       
-      if (dist > 20) continue; // Modest depth limit
-
       // Check if this position is a frontier tile
       if (this.state.frontierTiles.some(f => f.x === pos.x && f.y === pos.y)) {
         return pos;
       }
 
+      // 8-way connectivity for more robust exploration
       const neighbors = [
         {x: pos.x+1, y: pos.y}, {x: pos.x-1, y: pos.y}, 
-        {x: pos.x, y: pos.y+1}, {x: pos.x, y: pos.y-1}
+        {x: pos.x, y: pos.y+1}, {x: pos.x, y: pos.y-1},
+        {x: pos.x+1, y: pos.y+1}, {x: pos.x-1, y: pos.y-1},
+        {x: pos.x+1, y: pos.y-1}, {x: pos.x-1, y: pos.y+1}
       ];
 
       for (const n of neighbors) {
         if (n.x >= 0 && n.x < this.width && n.y >= 0 && n.y < this.height && !visited.has(`${n.x},${n.y}`)) {
           const floor = this.state.grid[n.y][n.x];
-          if (!floor.traits.includes('wall')) {
+          
+          // Check if blocked by wall or closed door
+          const isWall = floor.traits.includes('wall');
+          const isClosedDoor = this.getEntitiesAt(n).some(e => e.traits.includes('door') && !e.traits.includes('open'));
+          const isBarricade = this.getEntitiesAt(n).some(e => e.traits.includes('barricade'));
+          
+          if (!isWall && !isClosedDoor && !isBarricade) {
             visited.add(`${n.x},${n.y}`);
             queue.push({pos: n, dist: dist + 1});
           }
@@ -293,31 +336,14 @@ export class GameEngine {
     }
 
     this.state.rogue.pos = newPos;
-    this.kg.remove('rogue', 'is_at', `${this.state.rogue.pos.x - dx},${this.state.rogue.pos.y - dy}`);
-    this.kg.add('rogue', 'is_at', `${newPos.x},${newPos.y}`);
+    this.kg.set('rogue', 'is_at', `${newPos.x},${newPos.y}`);
     
     this.senseAndPerceive();
     return true;
   }
 
-  senseAndPerceive() {
-    const { newDiscovery, monsterVisible } = this.observeEnvironment();
-
-    const totalCells = this.width * this.height;
-    const exploredCells = this.state.grid.flat().filter(cell => cell.isExplored).length;
-    const explorationPercentage = (exploredCells / totalCells) * 100;
-
-    const envData = {
-      hp: this.state.rogue.hp || 0,
-      maxHp: 100,
-      potions: this.state.rogue.potions || 0,
-      monsterVisible,
-      newDiscovery,
-      explorationPercentage
-    };
-
-    const { logMessages } = this.bdi.perceive(envData);
-    logMessages.forEach(msg => this.log(msg));
+  senseAndPerceive(): { newDiscovery: boolean, monsterVisible: boolean } {
+    return this.observeEnvironment();
   }
 
   observeEnvironment() {
@@ -347,6 +373,7 @@ export class GameEngine {
             if (!neighbor.isExplored && !neighbor.traits.includes('wall')) {
               if (!this.state.frontierTiles.some(f => f.x === n.x && f.y === n.y)) {
                 this.state.frontierTiles.push(n);
+                this.bdi.updateBeliefs({ has_unknown_tiles: true });
               }
             }
           }
@@ -379,7 +406,7 @@ export class GameEngine {
         markVisible(e);
         if (!e.traits.includes('floor') && !e.traits.includes('wall') && !e.traits.includes('rogue')) {
           if (!this.kg.has(e.id, 'is_at', `${e.pos.x},${e.pos.y}`)) {
-            this.kg.add(e.id, 'is_at', `${e.pos.x},${e.pos.y}`);
+            this.kg.set(e.id, 'is_at', `${e.pos.x},${e.pos.y}`);
             // Simplified logging
             this.log(`Spotted entity at ${e.pos.x},${e.pos.y}`);
 
@@ -431,10 +458,41 @@ export class GameEngine {
             }
 
             if (e.traits.includes('door')) {
-               this.bdi.addDesire({ name: `Unlock ${e.id}`, priority: 4, goalState: { door_unlocked: true } });
+               this.kg.set(e.id, 'is_type', 'door');
+               this.bdi.addDesire({ name: `Unlock ${e.id}`, priority: 25, goalState: { door_unlocked: true } });
+            }
+
+            if (e.traits.includes('chest')) {
+               this.kg.set(e.id, 'is_type', 'chest');
+            }
+
+            if (e.traits.includes('amulet')) {
+               this.kg.set(e.id, 'is_type', 'amulet');
+               this.log(`Spotted the Amulet of Yendor!`);
+               newDiscovery = true;
+            }
+
+            if (e.traits.includes('stairs')) {
+               this.kg.set(e.id, 'is_type', 'stairs_down');
+               this.log(`Spotted the stairs to the next floor!`);
+               newDiscovery = true;
+            }
+
+            if (e.traits.includes('barricade')) {
+               this.kg.set(e.id, 'is_type', 'barricade');
+               this.bdi.updateBeliefs({ barricade_destroyed: false });
+               this.log(`Spotted a barricade! It blocks the path.`);
+               newDiscovery = true;
+            }
+
+            if (e.traits.includes('explosive')) {
+               this.kg.set(e.id, 'is_type', 'explosive');
+               this.log(`Spotted an explosive! This could be useful.`);
+               newDiscovery = true;
             }
 
             if (e.traits.includes('blue') && e.traits.includes('high_viscosity')) {
+               this.kg.set(e.id, 'is_type', 'health_potion');
                this.bdi.addDesire({ name: `Collect ${e.id}`, priority: 30, goalState: { [`${e.id}_collected`]: true } });
             }
           }
@@ -510,6 +568,7 @@ export class GameEngine {
 
       const entities = this.getEntitiesAt({x, y});
       const isClosedDoor = entities.some(e => e.traits.includes('door') && !e.traits.includes('open'));
+      const isBarricade = entities.some(e => e.traits.includes('barricade'));
       const isMonster = entities.some(e => (e.traits.includes('large') && e.traits.includes('fast')) && e.hp! > 0);
 
       let danger = false;
@@ -523,7 +582,7 @@ export class GameEngine {
         }
       }
 
-      return !(isClosedDoor || isMonster || danger);
+      return !(isClosedDoor || isBarricade || isMonster || danger);
     };
 
     if (typeof goal === 'function') {
@@ -626,7 +685,7 @@ export class GameEngine {
           execute: () => {
             const dist = Math.max(Math.abs(this.state.rogue.pos.x - potion.pos.x), Math.abs(this.state.rogue.pos.y - potion.pos.y));
             if (dist > 0) {
-              const step = this.getNextStepTowards(potion.pos);
+              const step = this.getNextStepTowards(potion.pos, true);
               if (step) {
                 return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: `Moving towards potion` }, status: 'in_progress' };
               }
@@ -723,7 +782,7 @@ export class GameEngine {
           execute: () => {
             const dist = Math.max(Math.abs(this.state.rogue.pos.x - door.pos.x), Math.abs(this.state.rogue.pos.y - door.pos.y));
             if (dist > 1) {
-              const step = this.getNextStepTowards(door.pos);
+              const step = this.getNextStepTowards(door.pos, true);
               if (step) {
                 return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: `Moving towards ${door.id}` }, status: 'in_progress' };
               }
@@ -742,12 +801,12 @@ export class GameEngine {
       actions.push({
         name: 'Descend Stairs',
         cost: 1,
-        preconditions: { door_unlocked: true, floor_cleared: false },
+        preconditions: { door_unlocked: true, floor_cleared: false, barricade_destroyed: true },
         effects: { floor_cleared: true },
         execute: () => {
           const dist = Math.max(Math.abs(this.state.rogue.pos.x - stairs.pos.x), Math.abs(this.state.rogue.pos.y - stairs.pos.y));
           if (dist > 0) {
-            const step = this.getNextStepTowards(stairs.pos);
+            const step = this.getNextStepTowards(stairs.pos, true);
             if (step) {
               return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: "Moving towards stairs" }, status: 'in_progress' };
             }
@@ -765,12 +824,12 @@ export class GameEngine {
       actions.push({
         name: 'Get Amulet',
         cost: 1,
-        preconditions: { door_unlocked: true, has_amulet: false },
+        preconditions: { door_unlocked: true, has_amulet: false, barricade_destroyed: true },
         effects: { has_amulet: true },
         execute: () => {
           const dist = Math.max(Math.abs(this.state.rogue.pos.x - amulet.pos.x), Math.abs(this.state.rogue.pos.y - amulet.pos.y));
           if (dist > 0) {
-            const step = this.getNextStepTowards(amulet.pos);
+            const step = this.getNextStepTowards(amulet.pos, true);
             if (step) {
               return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: "Moving towards amulet" }, status: 'in_progress' };
             }
@@ -791,7 +850,7 @@ export class GameEngine {
         
         actions.push({
           name: `Open ${chestId}`,
-          cost: isMimicBelief ? 50 : 2, // High cost if believed to be a mimic
+          cost: isMimicBelief ? 50 : 1 + ((this.bayesian.globalPriors['mimic'] || 0.1) * 50), // Dynamic cost based on Bayesian prior
           preconditions: { [`${chestId}_opened`]: false },
           effects: { [`${chestId}_opened`]: true, has_key: true },
           execute: () => {
@@ -800,7 +859,7 @@ export class GameEngine {
 
             const dist = Math.max(Math.abs(this.state.rogue.pos.x - chest.pos.x), Math.abs(this.state.rogue.pos.y - chest.pos.y));
             if (dist > 1) {
-              const step = this.getNextStepTowards(chest.pos);
+              const step = this.getNextStepTowards(chest.pos, true);
               if (step) {
                 return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: `Moving towards ${chestId}` }, status: 'in_progress' };
               }
@@ -812,6 +871,54 @@ export class GameEngine {
         });
       }
     }
+
+    // Action: Get Explosive
+    const explosive = this.state.entities.find(e => e.traits.includes('explosive'));
+    if (explosive && this.kg.has(explosive.id, 'is_type', 'explosive')) {
+      actions.push({
+        name: 'Get Explosive',
+        cost: 1,
+        preconditions: { has_explosive: false },
+        effects: { has_explosive: true },
+        execute: () => {
+          const dist = Math.max(Math.abs(this.state.rogue.pos.x - explosive.pos.x), Math.abs(this.state.rogue.pos.y - explosive.pos.y));
+          if (dist > 0) {
+            const step = this.getNextStepTowards(explosive.pos, true);
+            if (step) {
+              return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: "Moving towards explosive" }, status: 'in_progress' };
+            }
+            return { intent: null, status: 'failed' };
+          } else {
+            return { intent: { type: 'PICK_UP', targetId: explosive.id }, status: 'completed' };
+          }
+        }
+      });
+    }
+
+    // Action: Destroy Barricade
+    const barricades = this.state.entities.filter(e => e.traits.includes('barricade'));
+    barricades.forEach(barricade => {
+      if (this.kg.has(barricade.id, 'is_type', 'barricade')) {
+        actions.push({
+          name: `Destroy ${barricade.id}`,
+          cost: 1,
+          preconditions: { has_explosive: true, barricade_destroyed: false },
+          effects: { barricade_destroyed: true },
+          execute: () => {
+            const dist = Math.max(Math.abs(this.state.rogue.pos.x - barricade.pos.x), Math.abs(this.state.rogue.pos.y - barricade.pos.y));
+            if (dist > 1) {
+              const step = this.getNextStepTowards(barricade.pos, true);
+              if (step) {
+                return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: `Moving towards ${barricade.id}` }, status: 'in_progress' };
+              }
+              return { intent: null, status: 'failed' };
+            } else {
+              return { intent: { type: 'DESTROY', targetId: barricade.id }, status: 'completed' };
+            }
+          }
+        });
+      }
+    });
 
     // Action: Explore
     if (this.bdi.beliefs.has_unknown_tiles) {
@@ -841,10 +948,17 @@ export class GameEngine {
               this.state.rogue.currentPath = path;
               const nextStep = this.state.rogue.currentPath.shift()!;
               return { intent: { type: 'EXPLORE', dx: nextStep.x - this.state.rogue.pos.x, dy: nextStep.y - this.state.rogue.pos.y, reason: "Exploring frontier" }, status: 'completed' };
+            } else {
+              this.state.thoughts.push(`Status: Nearest frontier at ${target.x},${target.y} is currently unreachable.`);
+            }
+          } else {
+            this.state.thoughts.push("Status: No unknown tiles left to explore.");
+            if (this.bdi.beliefs.has_unknown_tiles) {
+              this.bdi.updateBeliefs({ has_unknown_tiles: false });
+              this.log("No more reachable tiles to explore.");
             }
           }
           
-          this.bdi.updateBeliefs({ has_unknown_tiles: false });
           return { intent: null, status: 'failed' };
         }
       });
@@ -898,18 +1012,36 @@ export class GameEngine {
         break;
       }
       case 'PICK_UP': {
-        const potion = this.state.entities.find(e => e.id === intent.targetId);
-        if (potion) {
-          this.state.rogue.potions = (this.state.rogue.potions || 0) + 1;
-          this.bdi.updateBeliefs({ has_potion: true, [`${potion.id}_collected`]: true });
-          this.log(`Picked up a health potion! Total: ${this.state.rogue.potions}`);
-          this.state.entities = this.state.entities.filter(e => e.id !== potion.id);
+        const item = this.state.entities.find(e => e.id === intent.targetId);
+        if (item) {
+          if (item.traits.includes('explosive')) {
+            this.bdi.updateBeliefs({ has_explosive: true });
+            this.log(`Picked up an explosive!`);
+          } else if (item.traits.includes('amulet')) {
+            this.bdi.updateBeliefs({ has_amulet: true });
+            this.log(`Picked up the Amulet!`);
+          } else {
+            this.state.rogue.potions = (this.state.rogue.potions || 0) + 1;
+            this.bdi.updateBeliefs({ has_potion: true, [`${item.id}_collected`]: true });
+            this.log(`Picked up a health potion! Total: ${this.state.rogue.potions}`);
+          }
+          this.state.entities = this.state.entities.filter(e => e.id !== item.id);
+        }
+        break;
+      }
+      case 'DESTROY': {
+        const target = this.state.entities.find(e => e.id === intent.targetId);
+        if (target && target.traits.includes('barricade')) {
+          this.bdi.updateBeliefs({ barricade_destroyed: true, has_explosive: false });
+          this.log(`Boom! ${target.id} destroyed!`);
+          this.state.entities = this.state.entities.filter(e => e.id !== target.id);
         }
         break;
       }
       case 'OPEN_CHEST': {
         const chest = this.state.entities.find(e => e.id === intent.targetId);
         if (chest) {
+          this.bayesian.updateGlobalPrior('mimic', chest.traits.includes('mimic'));
           this.bayesian.updatePrior(chest.id, chest.traits.includes('mimic'));
           this.bdi.updateBeliefs({ [`${chest.id}_opened`]: true });
           if (chest.traits.includes('mimic')) {
@@ -938,32 +1070,75 @@ export class GameEngine {
 
     this.state.turn++;
     
+    // Add a separator for the new turn in thoughts history
+    if (this.state.thoughts.length > 50) this.state.thoughts.shift(); // Keep last 50
+    this.state.thoughts.push(`--- TURN ${this.state.turn} ---`);
+    
+    // Belief summary
+    const keyStatus = this.bdi.beliefs.has_key ? "Have Key" : "Need Key";
+    const amuletStatus = this.bdi.beliefs.has_amulet ? "Have Amulet" : "Searching for Amulet";
+    this.state.thoughts.push(`Beliefs: ${keyStatus}, ${amuletStatus}, HP: ${this.state.rogue.hp}`);
+
     // 1. Sense
-    this.senseAndPerceive();
+    const { newDiscovery, monsterVisible } = this.senseAndPerceive();
     this.processAuditorySignals();
     this.evaluateProbabilities();
+
+    // Calculate exploration percentage
+    const totalWalkable = this.state.grid.flat().filter(f => !f.traits.includes('wall')).length;
+    const exploredWalkable = this.state.grid.flat().filter(f => f.isExplored && !f.traits.includes('wall')).length;
+    const explorationPercentage = (exploredWalkable / totalWalkable) * 100;
+
+    this.bdi.perceive({
+      hp: this.state.rogue.hp || 0,
+      maxHp: 100,
+      potions: this.state.rogue.potions || 0,
+      monsterVisible,
+      newDiscovery,
+      explorationPercentage
+    });
 
     // 2. Think
     const actions = this.generateActions();
     
     // Re-evaluate plan if empty
     if (this.bdi.currentPlan.length === 0) {
-      this.bdi.deliberate(actions);
+      this.state.thoughts.push("Deliberating on next goal...");
+      this.bdi.deliberate(actions, (targetId: string) => {
+        const target = this.state.entities.find(e => e.id === targetId);
+        if (!target) return Infinity;
+        return Math.max(Math.abs(this.state.rogue.pos.x - target.pos.x), Math.abs(this.state.rogue.pos.y - target.pos.y));
+      });
       if (this.bdi.intention) {
         this.log(`Formed Intention: ${this.bdi.intention.name}`);
         this.log(`Plan: ${this.bdi.currentPlan.map(a => a.name).join(' -> ')}`);
+        
+        this.state.thoughts.push(`Intention: ${this.bdi.intention.name} (Priority: ${this.bdi.intention.priority})`);
+        this.state.thoughts.push(`Strategy: ${this.bdi.currentPlan.map(a => a.name).join(' → ')}`);
       } else {
-        this.log("No valid plan found. Exploring...");
+        // If all desires are met, check if we should explore
         const exploreAction = actions.find(a => a.name === 'Explore');
         if (exploreAction) {
+           this.log("No valid plan found. Exploring...");
+           this.state.thoughts.push("Status: No valid plan found. Reverting to exploration.");
            this.bdi.currentPlan = [exploreAction];
+        } else {
+           this.log("No valid plan found and floor explored. Waiting...");
+           this.state.thoughts.push("Status: No valid plan found and floor explored. Waiting for next event.");
         }
       }
+    } else {
+      this.state.thoughts.push(`Continuing Plan: ${this.bdi.currentPlan.map(a => a.name).join(' → ')}`);
     }
 
     // 3. Act
     const intent = this.bdi.executeNextAction();
     if (intent) {
+      if ('reason' in intent && intent.reason) {
+        this.state.thoughts.push(`Action: ${intent.type} (${intent.reason})`);
+      } else {
+        this.state.thoughts.push(`Action: ${intent.type}`);
+      }
       this.resolveIntent(intent);
       // Force replan after an action completes to ensure we adapt to new knowledge
       this.bdi.currentPlan = []; 

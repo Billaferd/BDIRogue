@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { GameEngine } from "./game/engine";
 import { GridMap } from "./components/GridMap";
 import { AgentStatePanel } from "./components/AgentStatePanel";
+import { ThoughtPanel } from "./components/ThoughtPanel";
 import { Play, Pause, StepForward, RotateCcw } from "lucide-react";
 
 export default function App() {
@@ -160,6 +161,10 @@ export default function App() {
                   </div>
                 </div>
               </div>
+            </div>
+
+            <div className="mt-8 w-full">
+              <ThoughtPanel thoughts={engine.state.thoughts} />
             </div>
           </div>
 

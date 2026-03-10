@@ -1,6 +1,6 @@
 export type Position = { x: number; y: number };
 
-export type EntityTrait = 'blue' | 'high_viscosity' | 'large' | 'fast' | 'breathing' | 'suspicious' | 'locked' | 'open' | 'mimic' | 'amulet' | 'wall' | 'door' | 'floor' | 'stairs' | 'rogue' | 'key' | 'auditory_cadence_heavy' | 'auditory_cadence_light' | 'blood_splatter';
+export type EntityTrait = 'blue' | 'high_viscosity' | 'large' | 'fast' | 'breathing' | 'suspicious' | 'locked' | 'open' | 'mimic' | 'amulet' | 'wall' | 'door' | 'floor' | 'stairs' | 'rogue' | 'key' | 'auditory_cadence_heavy' | 'auditory_cadence_light' | 'blood_splatter' | 'barricade' | 'explosive' | 'chest';
 
 export interface Entity {
   id: string;
@@ -23,4 +23,5 @@ export interface GameState {
   currentFloor: number;
   maxFloor: number;
   frontierTiles: Position[];
+  thoughts: string[];
 }

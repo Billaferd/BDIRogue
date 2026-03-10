@@ -37,7 +37,6 @@ export class BDIAgent {
       hp_low: isHurt,
       has_potion: hasPotion,
       monster_threat: env.monsterVisible,
-      has_unknown_tiles: explorationPercentage < 100
     });
 
     if (env.newDiscovery) {
@@ -59,12 +58,29 @@ export class BDIAgent {
     if (isHurt) {
       if (descendDesire) descendDesire.priority = 95;
       if (getAmuletDesire) getAmuletDesire.priority = 95;
+      
+      // Scale Unlock Door desires when hurt
+      this.desires.forEach(d => {
+        if (d.name.startsWith('Unlock door_')) {
+          d.priority = 90;
+        }
+      });
+
       if (exploreDesire) exploreDesire.priority = 10;
       if (healDesire) healDesire.priority = hasPotion ? 98 : 80;
     } else {
-      if (descendDesire) descendDesire.priority = 10;
-      if (getAmuletDesire) getAmuletDesire.priority = 10;
-      // Priority scales inversely with percentage explored
+      // Priority of descending/amulet increases as exploration progresses
+      if (descendDesire) descendDesire.priority = Math.max(10, explorationPercentage);
+      if (getAmuletDesire) getAmuletDesire.priority = Math.max(10, explorationPercentage);
+      
+      // Scale Unlock Door desires as well
+      this.desires.forEach(d => {
+        if (d.name.startsWith('Unlock door_')) {
+          d.priority = Math.max(25, explorationPercentage);
+        }
+      });
+
+      // Priority of exploration scales inversely with percentage explored
       if (exploreDesire) exploreDesire.priority = Math.max(10, 100 - explorationPercentage);
       if (healDesire) healDesire.priority = 90;
     }
@@ -80,7 +96,7 @@ export class BDIAgent {
     this.desires.push(desire);
   }
 
-  deliberate(actions: GOAPAction[]) {
+  deliberate(actions: GOAPAction[], distanceCalculator?: (targetId: string) => number) {
     // Sort desires by priority (highest first)
     this.desires.sort((a, b) => b.priority - a.priority);
 
@@ -96,7 +112,7 @@ export class BDIAgent {
 
       if (!met) {
         // Try to form a plan
-        const plan = this.planner.plan(this.beliefs, desire.goalState, actions);
+        const plan = this.planner.plan(this.beliefs, desire.goalState, actions, distanceCalculator);
         if (plan && plan.length > 0) {
           this.intention = desire;
           this.currentPlan = plan;
