@@ -22,6 +22,7 @@ export type ActionResponse = {
 export interface GOAPAction {
   name: string;
   cost: number;
+  targetId?: string;
   preconditions: Partial<GOAPState>;
   effects: Partial<GOAPState>;
   // function to execute the action in the game world
@@ -134,23 +135,25 @@ export class GOAPPlanner {
         // Find the cheapest action that satisfies this goal condition
         const satisfyingActions = actions.filter(a => a.effects[key] === goal[key]);
         if (satisfyingActions.length > 0) {
-          let minCost = Math.min(...satisfyingActions.map(a => a.cost));
+          let minCost = Infinity;
           
-          // Add distance penalty if applicable
-          if (distanceCalculator) {
-            // Try to find a targetId in the action name or effects
-            for (const action of satisfyingActions) {
-              const targetIdMatch = action.name.match(/ (chest_\d+|potion_\d+|monster_\d+|barricade_\d+|explosive_\d+)/);
-              if (targetIdMatch) {
-                const targetId = targetIdMatch[1];
-                const dist = distanceCalculator(targetId);
-                if (dist !== Infinity) {
-                  minCost += dist;
-                }
+          for (const action of satisfyingActions) {
+            let currentActionCost = action.cost;
+            
+            // Add distance penalty if applicable
+            if (distanceCalculator && action.targetId) {
+              const dist = distanceCalculator(action.targetId);
+              if (dist !== Infinity) {
+                currentActionCost += dist;
               }
             }
+            
+            if (currentActionCost < minCost) {
+              minCost = currentActionCost;
+            }
           }
-          cost += minCost;
+          
+          cost += minCost === Infinity ? 100 : minCost;
         } else {
           // If no action can satisfy this, it's a very high cost
           cost += 100; 

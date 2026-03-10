@@ -225,19 +225,20 @@ export class GameEngine {
       currentFloor: floorNumber,
       maxFloor: maxFloor,
       frontierTiles: [],
+      unreachableFrontier: [],
       thoughts: []
     };
   }
 
   setupAgent() {
-    // Count chests to initialize beliefs
-    const chestCount = this.state.entities.filter(e => e.traits.includes('mimic')).length;
+    // Count all chests, not just mimics, to correctly initialize beliefs
+    const chestCount = this.state.entities.filter(e => e.traits.includes('chest')).length;
 
     // Initial Beliefs
     const initialBeliefs: any = {
       has_amulet: false,
       has_key: false,
-      door_unlocked: false,
+      door_unlocked: true, // Assume path is clear until a locked door is observed
       is_alive: true,
       monster_threat: false,
       hp_low: (this.state.rogue.hp || 100) < 60,
@@ -282,9 +283,11 @@ export class GameEngine {
     while (queue.length > 0) {
       const {pos, dist} = queue.shift()!;
       
-      // Check if this position is a frontier tile
+      // Check if this position is a frontier tile and NOT unreachable
       if (this.state.frontierTiles.some(f => f.x === pos.x && f.y === pos.y)) {
-        return pos;
+        if (!this.state.unreachableFrontier.some(u => u.x === pos.x && u.y === pos.y)) {
+          return pos;
+        }
       }
 
       // 8-way connectivity for more robust exploration
@@ -459,6 +462,12 @@ export class GameEngine {
 
             if (e.traits.includes('door')) {
                this.kg.set(e.id, 'is_type', 'door');
+               
+               // Invalidate the clear path belief if the door is actually locked
+               if (e.traits.includes('locked')) {
+                   this.bdi.updateBeliefs({ door_unlocked: false });
+               }
+               
                this.bdi.addDesire({ name: `Unlock ${e.id}`, priority: 25, goalState: { door_unlocked: true } });
             }
 
@@ -680,6 +689,7 @@ export class GameEngine {
         actions.push({
           name: `Pick Up ${potion.id}`,
           cost: 2,
+          targetId: potion.id,
           preconditions: {}, // Can always pick up if we know about it
           effects: { has_potion: true, [`${potion.id}_collected`]: true },
           execute: () => {
@@ -706,6 +716,7 @@ export class GameEngine {
       actions.push({
         name: 'Defeat Monster',
         cost: isHurt ? 10 : 1, // High cost if hurt, so it prefers fleeing
+        targetId: monster.id,
         preconditions: { monster_threat: true },
         effects: { monster_threat: false },
         execute: () => {
@@ -725,6 +736,7 @@ export class GameEngine {
       actions.push({
         name: 'Flee Monster',
         cost: isHurt ? 1 : 10, // Low cost if hurt, high cost if healthy
+        targetId: monster.id,
         preconditions: { monster_threat: true },
         effects: { monster_threat: false },
         execute: () => {
@@ -777,6 +789,7 @@ export class GameEngine {
         actions.push({
           name: `Unlock ${door.id}`,
           cost: 1,
+          targetId: door.id,
           preconditions: { has_key: true, door_unlocked: false },
           effects: { door_unlocked: true },
           execute: () => {
@@ -801,6 +814,7 @@ export class GameEngine {
       actions.push({
         name: 'Descend Stairs',
         cost: 1,
+        targetId: stairs.id,
         preconditions: { door_unlocked: true, floor_cleared: false, barricade_destroyed: true },
         effects: { floor_cleared: true },
         execute: () => {
@@ -824,6 +838,7 @@ export class GameEngine {
       actions.push({
         name: 'Get Amulet',
         cost: 1,
+        targetId: amulet.id,
         preconditions: { door_unlocked: true, has_amulet: false, barricade_destroyed: true },
         effects: { has_amulet: true },
         execute: () => {
@@ -842,21 +857,19 @@ export class GameEngine {
     }
 
     // Actions: Open Chests
-    const chestCount = this.state.entities.filter(e => e.traits.includes('mimic')).length;
-    for (let i = 1; i <= chestCount; i++) {
-      const chestId = `chest_${i}`;
+    const chests = this.state.entities.filter(e => e.traits.includes('chest'));
+    for (const chest of chests) {
+      const chestId = chest.id;
       if (this.kg.has(chestId, 'is_type', 'chest')) {
         const isMimicBelief = this.bdi.beliefs[`${chestId}_is_mimic`];
         
         actions.push({
           name: `Open ${chestId}`,
-          cost: isMimicBelief ? 50 : 1 + ((this.bayesian.globalPriors['mimic'] || 0.1) * 50), // Dynamic cost based on Bayesian prior
+          cost: isMimicBelief ? 50 : 1 + ((this.bayesian.globalPriors['mimic'] || 0.1) * 50),
+          targetId: chestId,
           preconditions: { [`${chestId}_opened`]: false },
           effects: { [`${chestId}_opened`]: true, has_key: true },
           execute: () => {
-            const chest = this.state.entities.find(e => e.id === chestId);
-            if (!chest) return { intent: null, status: 'failed' };
-
             const dist = Math.max(Math.abs(this.state.rogue.pos.x - chest.pos.x), Math.abs(this.state.rogue.pos.y - chest.pos.y));
             if (dist > 1) {
               const step = this.getNextStepTowards(chest.pos, true);
@@ -878,6 +891,7 @@ export class GameEngine {
       actions.push({
         name: 'Get Explosive',
         cost: 1,
+        targetId: explosive.id,
         preconditions: { has_explosive: false },
         effects: { has_explosive: true },
         execute: () => {
@@ -902,6 +916,7 @@ export class GameEngine {
         actions.push({
           name: `Destroy ${barricade.id}`,
           cost: 1,
+          targetId: barricade.id,
           preconditions: { has_explosive: true, barricade_destroyed: false },
           effects: { barricade_destroyed: true },
           execute: () => {
@@ -950,6 +965,7 @@ export class GameEngine {
               return { intent: { type: 'EXPLORE', dx: nextStep.x - this.state.rogue.pos.x, dy: nextStep.y - this.state.rogue.pos.y, reason: "Exploring frontier" }, status: 'completed' };
             } else {
               this.state.thoughts.push(`Status: Nearest frontier at ${target.x},${target.y} is currently unreachable.`);
+              this.state.unreachableFrontier.push(target);
             }
           } else {
             this.state.thoughts.push("Status: No unknown tiles left to explore.");
@@ -965,6 +981,14 @@ export class GameEngine {
     }
 
     return actions;
+  }
+
+  clearUnreachableBlacklist() {
+    if (this.state.unreachableFrontier.length > 0) {
+      this.log("Environmental change detected. Re-evaluating unreachable areas.");
+      this.state.unreachableFrontier = [];
+      this.bdi.updateBeliefs({ has_unknown_tiles: true });
+    }
   }
 
   resolveIntent(intent: Intent) {
@@ -997,6 +1021,7 @@ export class GameEngine {
             this.log("Monster defeated!");
             this.bdi.updateBeliefs({ monster_threat: false });
             monster.traits = ['floor']; // turn into corpse/floor
+            this.clearUnreachableBlacklist();
           }
         }
         break;
@@ -1008,6 +1033,7 @@ export class GameEngine {
           door.traits.push('open');
           this.bdi.updateBeliefs({ door_unlocked: true });
           this.log(`Unlocked ${door.id}!`);
+          this.clearUnreachableBlacklist();
         }
         break;
       }
@@ -1035,6 +1061,7 @@ export class GameEngine {
           this.bdi.updateBeliefs({ barricade_destroyed: true, has_explosive: false });
           this.log(`Boom! ${target.id} destroyed!`);
           this.state.entities = this.state.entities.filter(e => e.id !== target.id);
+          this.clearUnreachableBlacklist();
         }
         break;
       }

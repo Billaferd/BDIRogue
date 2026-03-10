@@ -23,5 +23,6 @@ export interface GameState {
   currentFloor: number;
   maxFloor: number;
   frontierTiles: Position[];
+  unreachableFrontier: Position[];
   thoughts: string[];
 }
