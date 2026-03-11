@@ -94,6 +94,7 @@ export class GameEngine {
     while (queue.length > 0) {
       const [cx, cy] = queue.shift()!;
       
+      // Check if this coordinate is inside any room
       for (const room of rooms) {
         if (cx >= room.getLeft() && cx <= room.getRight() && cy >= room.getTop() && cy <= room.getBottom()) {
           reachableRooms.add(room);
@@ -119,39 +120,18 @@ export class GameEngine {
       }
     }
 
+    const reachableRoomsArr = Array.from(reachableRooms).filter(r => r !== targetRoom);
+    // Prefer a room that is NOT the start room for the key, to make it an objective
+    const potentialKeyRooms = reachableRoomsArr.filter(r => r !== startRoom);
+    const keyRoom = potentialKeyRooms.length > 0 ? 
+      potentialKeyRooms[Math.floor(Math.random() * potentialKeyRooms.length)] : 
+      startRoom;
+    
     // 6. Place Chests, Potions, and Monsters
     let chestCount = 1;
     let monsterCount = 1;
     let potionCount = 1;
 
-    const reachableRoomsArr = Array.from(reachableRooms);
-
-    // 7. Place Barricade and Explosive (Floor 5 only for maximum drama)
-    if (floorNumber === maxFloor) {
-      // Place barricade near the amulet
-      const targetPos = targetRoom.getCenter();
-      entities.push({
-        id: 'barricade_1',
-        traits: ['barricade'],
-        pos: { x: targetPos[0] - 1, y: targetPos[1] },
-        isExplored: false,
-        isVisible: false
-      });
-
-      // Place explosive in a random reachable room
-      const explosiveRoom = reachableRoomsArr[Math.floor(Math.random() * reachableRoomsArr.length)];
-      const expPos = explosiveRoom.getCenter();
-      entities.push({
-        id: 'explosive_1',
-        traits: ['explosive'],
-        pos: { x: expPos[0] + 1, y: expPos[1] + 1 },
-        isExplored: false,
-        isVisible: false
-      });
-    }
-
-    const keyRoom = reachableRoomsArr.length > 0 ? reachableRoomsArr[0] : startRoom;
-    
     // We place chests in all rooms except the target room (unless it's the only room)
     const roomsForChests = rooms.filter(r => r !== targetRoom || r === startRoom);
     
@@ -226,7 +206,8 @@ export class GameEngine {
       maxFloor: maxFloor,
       frontierTiles: [],
       unreachableFrontier: [],
-      thoughts: []
+      thoughts: [],
+      lastThoughts: []
     };
   }
 
@@ -238,9 +219,7 @@ export class GameEngine {
     const initialBeliefs: any = {
       has_amulet: false,
       has_key: false,
-      door_unlocked: true, // Assume path is clear until a locked door is observed
       is_alive: true,
-      monster_threat: false,
       hp_low: (this.state.rogue.hp || 100) < 60,
       has_potion: (this.state.rogue.potions || 0) > 0,
       floor_cleared: false,
@@ -255,7 +234,7 @@ export class GameEngine {
 
     // Desires
     this.bdi.addDesire({ name: 'Heal', priority: 90, goalState: { hp_low: false } }); // High priority if low HP
-    this.bdi.addDesire({ name: 'Stay Alive', priority: 100, goalState: { is_alive: true, monster_threat: false } }); // Highest priority if threatened
+    this.bdi.addDesire({ name: 'Stay Alive', priority: 100, goalState: { is_alive: true } }); // Highest priority if threatened
     
     // We will dynamically adjust priorities in tick() based on health
     this.bdi.addDesire({ name: 'Explore Floor', priority: 20, goalState: { has_unknown_tiles: false } });
@@ -290,12 +269,10 @@ export class GameEngine {
         }
       }
 
-      // 8-way connectivity for more robust exploration
+      // 4-way connectivity for strict grid movement
       const neighbors = [
         {x: pos.x+1, y: pos.y}, {x: pos.x-1, y: pos.y}, 
-        {x: pos.x, y: pos.y+1}, {x: pos.x, y: pos.y-1},
-        {x: pos.x+1, y: pos.y+1}, {x: pos.x-1, y: pos.y-1},
-        {x: pos.x+1, y: pos.y-1}, {x: pos.x-1, y: pos.y+1}
+        {x: pos.x, y: pos.y+1}, {x: pos.x, y: pos.y-1}
       ];
 
       for (const n of neighbors) {
@@ -376,7 +353,6 @@ export class GameEngine {
             if (!neighbor.isExplored && !neighbor.traits.includes('wall')) {
               if (!this.state.frontierTiles.some(f => f.x === n.x && f.y === n.y)) {
                 this.state.frontierTiles.push(n);
-                this.bdi.updateBeliefs({ has_unknown_tiles: true });
               }
             }
           }
@@ -446,7 +422,6 @@ export class GameEngine {
                 }, e.pos);
                 const pElite = this.bayesian.priors[e.id];
                 this.log(`Evaluated ${e.id}: P(Elite) = ${(pElite * 100).toFixed(1)}%`);
-                if (pElite > 0.5) this.bdi.updateBeliefs({ [`${e.id}_is_elite`]: true });
             } else if (e.traits.includes('blue') || e.traits.includes('high_viscosity') || e.traits.includes('amulet')) {
                 // Update item_is_beneficial
                 this.bayesian.updateBelief(e.id, evidence, {
@@ -457,18 +432,11 @@ export class GameEngine {
                 }, e.pos);
                 const pBeneficial = this.bayesian.priors[e.id];
                 this.log(`Evaluated ${e.id}: P(Beneficial) = ${(pBeneficial * 100).toFixed(1)}%`);
-                if (pBeneficial > 0.5) this.bdi.updateBeliefs({ [`${e.id}_is_beneficial`]: true });
             }
 
             if (e.traits.includes('door')) {
                this.kg.set(e.id, 'is_type', 'door');
-               
-               // Invalidate the clear path belief if the door is actually locked
-               if (e.traits.includes('locked')) {
-                   this.bdi.updateBeliefs({ door_unlocked: false });
-               }
-               
-               this.bdi.addDesire({ name: `Unlock ${e.id}`, priority: 25, goalState: { door_unlocked: true } });
+               this.bdi.addDesire({ name: `Unlock ${e.id}`, priority: 25, goalState: { [`${e.id}_unlocked`]: true } });
             }
 
             if (e.traits.includes('chest')) {
@@ -489,7 +457,6 @@ export class GameEngine {
 
             if (e.traits.includes('barricade')) {
                this.kg.set(e.id, 'is_type', 'barricade');
-               this.bdi.updateBeliefs({ barricade_destroyed: false });
                this.log(`Spotted a barricade! It blocks the path.`);
                newDiscovery = true;
             }
@@ -508,6 +475,7 @@ export class GameEngine {
 
           if ((e.traits.includes('large') && e.traits.includes('fast')) && e.hp! > 0) {
             monsterVisible = true;
+            this.bdi.addDesire({ name: `Survive ${e.id}`, priority: 100, goalState: { [`${e.id}_threat`]: false } });
           }
         }
       });
@@ -541,9 +509,9 @@ export class GameEngine {
   evaluateProbabilities() {
     for (const [id, prob] of Object.entries(this.bayesian.priors)) {
       if (prob > 0.8) {
-        this.bdi.updateBeliefs({ [`${id}_is_confirmed`]: true });
+        // Confirmations are synced in synchronizeBeliefs()
       } else if (prob < 0.2) {
-        this.bdi.updateBeliefs({ [`${id}_is_confirmed`]: false });
+        // Confirmations are synced in synchronizeBeliefs()
       }
     }
   }
@@ -584,7 +552,7 @@ export class GameEngine {
       if (!ignoreDanger) {
         for (const e of this.state.entities) {
           if (e.traits.includes('mimic') && this.bdi.beliefs[`${e.id}_is_mimic`]) {
-            if (Math.max(Math.abs(e.pos.x - x), Math.abs(e.pos.y - y)) <= 1) {
+            if (Math.abs(e.pos.x - x) + Math.abs(e.pos.y - y) <= 1) {
               danger = true;
             }
           }
@@ -595,7 +563,7 @@ export class GameEngine {
     };
 
     if (typeof goal === 'function') {
-      const dijkstra = new ROT.Path.Dijkstra(start.x, start.y, passableCallback, {topology: 8});
+      const dijkstra = new ROT.Path.Dijkstra(start.x, start.y, passableCallback, {topology: 4});
       let bestPath: Position[] | null = null;
       let bestDist = Infinity;
 
@@ -604,9 +572,7 @@ export class GameEngine {
           if (goal({x, y})) {
             const neighbors = [
               {x: x, y: y - 1}, {x: x, y: y + 1},
-              {x: x - 1, y: y}, {x: x + 1, y: y},
-              {x: x - 1, y: y - 1}, {x: x + 1, y: y - 1},
-              {x: x - 1, y: y + 1}, {x: x + 1, y: y + 1}
+              {x: x - 1, y: y}, {x: x + 1, y: y}
             ];
             for (const n of neighbors) {
               if (n.x === start.x && n.y === start.y) {
@@ -630,7 +596,7 @@ export class GameEngine {
       }
       return bestPath;
     } else {
-      const astar = new ROT.Path.AStar(goal.x, goal.y, passableCallback, {topology: 8});
+      const astar = new ROT.Path.AStar(goal.x, goal.y, passableCallback, {topology: 4});
       const path: Position[] = [];
       astar.compute(start.x, start.y, (x, y) => {
         path.push({x, y});
@@ -693,7 +659,7 @@ export class GameEngine {
           preconditions: {}, // Can always pick up if we know about it
           effects: { has_potion: true, [`${potion.id}_collected`]: true },
           execute: () => {
-            const dist = Math.max(Math.abs(this.state.rogue.pos.x - potion.pos.x), Math.abs(this.state.rogue.pos.y - potion.pos.y));
+            const dist = Math.abs(this.state.rogue.pos.x - potion.pos.x) + Math.abs(this.state.rogue.pos.y - potion.pos.y);
             if (dist > 0) {
               const step = this.getNextStepTowards(potion.pos, true);
               if (step) {
@@ -708,23 +674,24 @@ export class GameEngine {
       }
     });
 
-    // Action: Defeat Monster
-    const monster = this.state.entities.find(e => (e.traits.includes('large') && e.traits.includes('fast')) && e.hp! > 0 && e.isVisible);
-    if (monster) {
+    // Action: Defeat Monster / Flee Monster
+    const visibleMonsters = this.state.entities.filter(e => (e.traits.includes('large') && e.traits.includes('fast')) && e.hp! > 0 && e.isVisible);
+    visibleMonsters.forEach(monster => {
       const isHurt = this.state.rogue.hp! < 60;
+      const monsterThreatKey = `${monster.id}_threat`;
 
       actions.push({
-        name: 'Defeat Monster',
+        name: `Defeat ${monster.id}`,
         cost: isHurt ? 10 : 1, // High cost if hurt, so it prefers fleeing
         targetId: monster.id,
-        preconditions: { monster_threat: true },
-        effects: { monster_threat: false },
+        preconditions: { [monsterThreatKey]: true },
+        effects: { [monsterThreatKey]: false },
         execute: () => {
-          const dist = Math.max(Math.abs(this.state.rogue.pos.x - monster.pos.x), Math.abs(this.state.rogue.pos.y - monster.pos.y));
+          const dist = Math.abs(this.state.rogue.pos.x - monster.pos.x) + Math.abs(this.state.rogue.pos.y - monster.pos.y);
           if (dist > 1) {
             const step = this.getNextStepTowards(monster.pos, true);
             if (step) {
-              return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: "Charging at monster" }, status: 'in_progress' };
+              return { intent: { type: 'MOVE', dx: step.dx, dy: step.dy, reason: `Charging at ${monster.id}` }, status: 'in_progress' };
             }
             return { intent: null, status: 'failed' };
           } else {
@@ -734,19 +701,18 @@ export class GameEngine {
       });
 
       actions.push({
-        name: 'Flee Monster',
+        name: `Flee ${monster.id}`,
         cost: isHurt ? 1 : 10, // Low cost if hurt, high cost if healthy
         targetId: monster.id,
-        preconditions: { monster_threat: true },
-        effects: { monster_threat: false },
+        preconditions: { [monsterThreatKey]: true },
+        effects: { [monsterThreatKey]: false },
         execute: () => {
           const dx = this.state.rogue.pos.x - monster.pos.x;
           const dy = this.state.rogue.pos.y - monster.pos.y;
           
           // Prefer moving to explored safe tiles
           const safeMoves = [
-            {x: 1, y: 0}, {x: -1, y: 0}, {x: 0, y: 1}, {x: 0, y: -1},
-            {x: 1, y: 1}, {x: -1, y: -1}, {x: 1, y: -1}, {x: -1, y: 1}
+            {x: 1, y: 0}, {x: -1, y: 0}, {x: 0, y: 1}, {x: 0, y: -1}
           ].filter(m => {
              const nx = this.state.rogue.pos.x + m.x;
              const ny = this.state.rogue.pos.y + m.y;
@@ -755,8 +721,8 @@ export class GameEngine {
              if (floor.traits.includes('wall')) return false;
              
              // Avoid moving closer to the monster
-             const newDist = Math.max(Math.abs(nx - monster.pos.x), Math.abs(ny - monster.pos.y));
-             const oldDist = Math.max(Math.abs(dx), Math.abs(dy));
+             const newDist = Math.abs(nx - monster.pos.x) + Math.abs(ny - monster.pos.y);
+             const oldDist = Math.abs(dx) + Math.abs(dy);
              if (newDist < oldDist) return false;
              
              // Check for other entities blocking
@@ -769,31 +735,32 @@ export class GameEngine {
           if (safeMoves.length > 0) {
              // Sort by distance from monster (descending)
              safeMoves.sort((a, b) => {
-                const distA = Math.max(Math.abs(this.state.rogue.pos.x + a.x - monster.pos.x), Math.abs(this.state.rogue.pos.y + a.y - monster.pos.y));
-                const distB = Math.max(Math.abs(this.state.rogue.pos.x + b.x - monster.pos.x), Math.abs(this.state.rogue.pos.y + b.y - monster.pos.y));
+                const distA = Math.abs(this.state.rogue.pos.x + a.x - monster.pos.x) + Math.abs(this.state.rogue.pos.y + a.y - monster.pos.y);
+                const distB = Math.abs(this.state.rogue.pos.x + b.x - monster.pos.x) + Math.abs(this.state.rogue.pos.y + b.y - monster.pos.y);
                 return distB - distA;
              });
              
-             return { intent: { type: 'MOVE', dx: safeMoves[0].x, dy: safeMoves[0].y, reason: "Fleeing from monster" }, status: 'completed' };
+             return { intent: { type: 'MOVE', dx: safeMoves[0].x, dy: safeMoves[0].y, reason: `Fleeing from ${monster.id}` }, status: 'completed' };
           } else {
              return { intent: { type: 'ATTACK', targetId: monster.id }, status: 'completed' };
           }
         }
       });
-    }
+    });
 
     // Action: Unlock Door
     const doors = this.state.entities.filter(e => e.traits.includes('door'));
     doors.forEach(door => {
       if (this.kg.has(door.id, 'is_type', 'door')) {
+        const doorUnlockedKey = `${door.id}_unlocked`;
         actions.push({
           name: `Unlock ${door.id}`,
           cost: 1,
           targetId: door.id,
-          preconditions: { has_key: true, door_unlocked: false },
-          effects: { door_unlocked: true },
+          preconditions: { has_key: true, [doorUnlockedKey]: false },
+          effects: { [doorUnlockedKey]: true },
           execute: () => {
-            const dist = Math.max(Math.abs(this.state.rogue.pos.x - door.pos.x), Math.abs(this.state.rogue.pos.y - door.pos.y));
+            const dist = Math.abs(this.state.rogue.pos.x - door.pos.x) + Math.abs(this.state.rogue.pos.y - door.pos.y);
             if (dist > 1) {
               const step = this.getNextStepTowards(door.pos, true);
               if (step) {
@@ -811,14 +778,20 @@ export class GameEngine {
     // Action: Descend Stairs
     const stairs = this.state.entities.find(e => e.traits.includes('stairs'));
     if (stairs && this.kg.has(stairs.id, 'is_type', 'stairs_down')) {
+      const preconditions: any = { floor_cleared: false, barricade_destroyed: true };
+      // All known locked doors must be unlocked
+      this.state.entities.filter(e => e.traits.includes('door') && e.isExplored && e.traits.includes('locked')).forEach(door => {
+          preconditions[`${door.id}_unlocked`] = true;
+      });
+
       actions.push({
         name: 'Descend Stairs',
         cost: 1,
         targetId: stairs.id,
-        preconditions: { door_unlocked: true, floor_cleared: false, barricade_destroyed: true },
+        preconditions,
         effects: { floor_cleared: true },
         execute: () => {
-          const dist = Math.max(Math.abs(this.state.rogue.pos.x - stairs.pos.x), Math.abs(this.state.rogue.pos.y - stairs.pos.y));
+          const dist = Math.abs(this.state.rogue.pos.x - stairs.pos.x) + Math.abs(this.state.rogue.pos.y - stairs.pos.y);
           if (dist > 0) {
             const step = this.getNextStepTowards(stairs.pos, true);
             if (step) {
@@ -835,14 +808,20 @@ export class GameEngine {
     // Action: Get Amulet
     const amulet = this.state.entities.find(e => e.traits.includes('amulet'));
     if (amulet && this.kg.has(amulet.id, 'is_type', 'amulet')) {
+      const preconditions: any = { has_amulet: false, barricade_destroyed: true };
+      // All known locked doors must be unlocked
+      this.state.entities.filter(e => e.traits.includes('door') && e.isExplored && e.traits.includes('locked')).forEach(door => {
+          preconditions[`${door.id}_unlocked`] = true;
+      });
+
       actions.push({
         name: 'Get Amulet',
         cost: 1,
         targetId: amulet.id,
-        preconditions: { door_unlocked: true, has_amulet: false, barricade_destroyed: true },
+        preconditions,
         effects: { has_amulet: true },
         execute: () => {
-          const dist = Math.max(Math.abs(this.state.rogue.pos.x - amulet.pos.x), Math.abs(this.state.rogue.pos.y - amulet.pos.y));
+          const dist = Math.abs(this.state.rogue.pos.x - amulet.pos.x) + Math.abs(this.state.rogue.pos.y - amulet.pos.y);
           if (dist > 0) {
             const step = this.getNextStepTowards(amulet.pos, true);
             if (step) {
@@ -870,7 +849,7 @@ export class GameEngine {
           preconditions: { [`${chestId}_opened`]: false },
           effects: { [`${chestId}_opened`]: true, has_key: true },
           execute: () => {
-            const dist = Math.max(Math.abs(this.state.rogue.pos.x - chest.pos.x), Math.abs(this.state.rogue.pos.y - chest.pos.y));
+            const dist = Math.abs(this.state.rogue.pos.x - chest.pos.x) + Math.abs(this.state.rogue.pos.y - chest.pos.y);
             if (dist > 1) {
               const step = this.getNextStepTowards(chest.pos, true);
               if (step) {
@@ -895,7 +874,7 @@ export class GameEngine {
         preconditions: { has_explosive: false },
         effects: { has_explosive: true },
         execute: () => {
-          const dist = Math.max(Math.abs(this.state.rogue.pos.x - explosive.pos.x), Math.abs(this.state.rogue.pos.y - explosive.pos.y));
+          const dist = Math.abs(this.state.rogue.pos.x - explosive.pos.x) + Math.abs(this.state.rogue.pos.y - explosive.pos.y);
           if (dist > 0) {
             const step = this.getNextStepTowards(explosive.pos, true);
             if (step) {
@@ -920,7 +899,7 @@ export class GameEngine {
           preconditions: { has_explosive: true, barricade_destroyed: false },
           effects: { barricade_destroyed: true },
           execute: () => {
-            const dist = Math.max(Math.abs(this.state.rogue.pos.x - barricade.pos.x), Math.abs(this.state.rogue.pos.y - barricade.pos.y));
+            const dist = Math.abs(this.state.rogue.pos.x - barricade.pos.x) + Math.abs(this.state.rogue.pos.y - barricade.pos.y);
             if (dist > 1) {
               const step = this.getNextStepTowards(barricade.pos, true);
               if (step) {
@@ -936,49 +915,44 @@ export class GameEngine {
     });
 
     // Action: Explore
-    if (this.bdi.beliefs.has_unknown_tiles) {
-      actions.push({
-        name: 'Explore',
-        cost: 1,
-        preconditions: { has_unknown_tiles: true },
-        effects: { has_unknown_tiles: false },
-        execute: () => {
-          // Use existing path if valid
-          if (this.state.rogue.currentPath && this.state.rogue.currentPath.length > 0) {
-            const nextStep = this.state.rogue.currentPath[0];
-            // Check if next step is still valid
-            const floor = this.state.grid[nextStep.y][nextStep.x];
-            if (!floor.traits.includes('wall')) {
-              this.state.rogue.currentPath.shift();
-              return { intent: { type: 'EXPLORE', dx: nextStep.x - this.state.rogue.pos.x, dy: nextStep.y - this.state.rogue.pos.y, reason: "Following path" }, status: 'completed' };
-            }
+    actions.push({
+      name: 'Explore',
+      cost: 1,
+      preconditions: {}, // Unrestricted selection
+      effects: { has_unknown_tiles: false },
+      execute: () => {
+        // Use existing path if valid
+        if (this.state.rogue.currentPath && this.state.rogue.currentPath.length > 0) {
+          const nextStep = this.state.rogue.currentPath[0];
+          // Check if next step is still valid
+          const floor = this.state.grid[nextStep.y][nextStep.x];
+          if (!floor.traits.includes('wall')) {
+            this.state.rogue.currentPath.shift();
+            return { intent: { type: 'EXPLORE', dx: nextStep.x - this.state.rogue.pos.x, dy: nextStep.y - this.state.rogue.pos.y, reason: "Following path" }, status: 'in_progress' };
           }
-
-          // Find nearest frontier tile
-          const target = this.findNearestFrontier(this.state.rogue.pos);
-
-          if (target) {
-            const path = this.findPath(this.state.rogue.pos, target);
-            if (path && path.length > 0) {
-              this.state.rogue.currentPath = path;
-              const nextStep = this.state.rogue.currentPath.shift()!;
-              return { intent: { type: 'EXPLORE', dx: nextStep.x - this.state.rogue.pos.x, dy: nextStep.y - this.state.rogue.pos.y, reason: "Exploring frontier" }, status: 'completed' };
-            } else {
-              this.state.thoughts.push(`Status: Nearest frontier at ${target.x},${target.y} is currently unreachable.`);
-              this.state.unreachableFrontier.push(target);
-            }
-          } else {
-            this.state.thoughts.push("Status: No unknown tiles left to explore.");
-            if (this.bdi.beliefs.has_unknown_tiles) {
-              this.bdi.updateBeliefs({ has_unknown_tiles: false });
-              this.log("No more reachable tiles to explore.");
-            }
-          }
-          
-          return { intent: null, status: 'failed' };
         }
-      });
-    }
+
+        // Find nearest frontier tile
+        const target = this.findNearestFrontier(this.state.rogue.pos);
+
+        if (target) {
+          const path = this.findPath(this.state.rogue.pos, target);
+          if (path && path.length > 0) {
+            this.state.rogue.currentPath = path;
+            const nextStep = this.state.rogue.currentPath.shift()!;
+            return { intent: { type: 'EXPLORE', dx: nextStep.x - this.state.rogue.pos.x, dy: nextStep.y - this.state.rogue.pos.y, reason: "Exploring frontier" }, status: 'in_progress' };
+          } else {
+            this.state.thoughts.push(`Status: Nearest frontier at ${target.x},${target.y} is currently unreachable.`);
+            this.state.unreachableFrontier.push(target);
+            return { intent: null, status: 'in_progress' };
+          }
+        } else {
+          this.state.thoughts.push("Status: No reachable unknown tiles left to explore.");
+          this.log("No more reachable tiles to explore.");
+          return { intent: null, status: 'completed' };
+        }
+      }
+    });
 
     return actions;
   }
@@ -1002,24 +976,19 @@ export class GameEngine {
           this.state.rogue.potions!--;
           this.state.rogue.hp = Math.min(100, (this.state.rogue.hp || 0) + 50);
           this.log(`Drank a potion! HP is now ${this.state.rogue.hp}. Potions left: ${this.state.rogue.potions}`);
-          this.bdi.updateBeliefs({ 
-            hp_low: this.state.rogue.hp < 60,
-            has_potion: this.state.rogue.potions > 0
-          });
         }
         break;
       case 'DESCEND':
-        this.bdi.updateBeliefs({ floor_cleared: true });
+        this.kg.set('floor', 'status', 'cleared');
         this.log("Descended the stairs!");
         break;
       case 'ATTACK': {
         const monster = this.state.entities.find(e => e.id === intent.targetId);
         if (monster && monster.hp! > 0) {
-          this.log("Attacking monster!");
+          this.log(`Attacking ${monster.id}!`);
           monster.hp! -= 15;
           if (monster.hp! <= 0) {
-            this.log("Monster defeated!");
-            this.bdi.updateBeliefs({ monster_threat: false });
+            this.log(`${monster.id} defeated!`);
             monster.traits = ['floor']; // turn into corpse/floor
             this.clearUnreachableBlacklist();
           }
@@ -1031,7 +1000,6 @@ export class GameEngine {
         if (door && !door.traits.includes('open')) {
           door.traits = door.traits.filter(t => t !== 'locked');
           door.traits.push('open');
-          this.bdi.updateBeliefs({ door_unlocked: true });
           this.log(`Unlocked ${door.id}!`);
           this.clearUnreachableBlacklist();
         }
@@ -1041,14 +1009,14 @@ export class GameEngine {
         const item = this.state.entities.find(e => e.id === intent.targetId);
         if (item) {
           if (item.traits.includes('explosive')) {
-            this.bdi.updateBeliefs({ has_explosive: true });
+            this.kg.set('rogue', 'has_item', 'explosive');
             this.log(`Picked up an explosive!`);
           } else if (item.traits.includes('amulet')) {
-            this.bdi.updateBeliefs({ has_amulet: true });
+            this.kg.set('rogue', 'has_item', 'amulet');
             this.log(`Picked up the Amulet!`);
           } else {
             this.state.rogue.potions = (this.state.rogue.potions || 0) + 1;
-            this.bdi.updateBeliefs({ has_potion: true, [`${item.id}_collected`]: true });
+            this.kg.set(item.id, 'has_item', 'rogue');
             this.log(`Picked up a health potion! Total: ${this.state.rogue.potions}`);
           }
           this.state.entities = this.state.entities.filter(e => e.id !== item.id);
@@ -1058,7 +1026,7 @@ export class GameEngine {
       case 'DESTROY': {
         const target = this.state.entities.find(e => e.id === intent.targetId);
         if (target && target.traits.includes('barricade')) {
-          this.bdi.updateBeliefs({ barricade_destroyed: true, has_explosive: false });
+          this.kg.remove('rogue', 'has_item', 'explosive');
           this.log(`Boom! ${target.id} destroyed!`);
           this.state.entities = this.state.entities.filter(e => e.id !== target.id);
           this.clearUnreachableBlacklist();
@@ -1070,19 +1038,20 @@ export class GameEngine {
         if (chest) {
           this.bayesian.updateGlobalPrior('mimic', chest.traits.includes('mimic'));
           this.bayesian.updatePrior(chest.id, chest.traits.includes('mimic'));
-          this.bdi.updateBeliefs({ [`${chest.id}_opened`]: true });
+          this.kg.set(chest.id, 'status', 'opened');
+          
           if (chest.traits.includes('mimic')) {
             this.log(`Oh no! ${chest.id} was a Mimic!`);
             this.state.rogue.hp! -= 50;
-            this.bdi.updateBeliefs({ hp_low: this.state.rogue.hp! < 60 });
             if (this.state.rogue.hp! <= 0) {
-              this.bdi.updateBeliefs({ is_alive: false });
               this.log("You died.");
             }
-          } else if (chest.traits.includes('key')) {
-            this.bdi.updateBeliefs({ has_key: true });
+          }
+          
+          if (chest.traits.includes('key')) {
+            this.kg.set('rogue', 'has_item', 'key');
             this.log(`Found a key in ${chest.id}!`);
-          } else {
+          } else if (!chest.traits.includes('mimic')) {
             this.log(`${chest.id} was empty.`);
           }
         }
@@ -1091,23 +1060,105 @@ export class GameEngine {
     }
   }
 
+  synchronizeBeliefs() {
+    const newBeliefs: any = {
+      is_alive: (this.state.rogue.hp || 0) > 0,
+      hp_low: (this.state.rogue.hp || 0) < 60,
+      has_potion: (this.state.rogue.potions || 0) > 0,
+      has_amulet: this.kg.has('rogue', 'has_item', 'amulet'),
+      has_key: this.kg.has('rogue', 'has_item', 'key'),
+      has_explosive: this.kg.has('rogue', 'has_item', 'explosive'),
+      barricade_destroyed: !this.state.entities.some(e => e.traits.includes('barricade') && e.isExplored),
+      has_unknown_tiles: this.state.frontierTiles.length > 0 && this.state.frontierTiles.some(f => !this.state.unreachableFrontier.some(u => u.x === f.x && u.y === f.y)),
+      floor_cleared: this.kg.has('floor', 'status', 'cleared')
+    };
+
+    // Parameterized door beliefs
+    this.state.entities.filter(e => e.traits.includes('door')).forEach(door => {
+      if (door.isExplored) {
+        newBeliefs[`${door.id}_unlocked`] = !door.traits.includes('locked');
+      }
+    });
+
+    // Parameterized monster beliefs
+    this.state.entities.filter(e => (e.traits.includes('large') && e.traits.includes('fast'))).forEach(monster => {
+      newBeliefs[`${monster.id}_threat`] = monster.isVisible && (monster.hp || 0) > 0;
+    });
+
+    // Sync individual entity beliefs from Knowledge Graph
+    this.kg.query().forEach(triple => {
+      if (triple.predicate === 'status' && triple.object === 'opened') {
+         newBeliefs[`${triple.subject}_opened`] = true;
+      }
+      if (triple.predicate === 'has_item' && triple.object === 'rogue') {
+         newBeliefs[`${triple.subject}_collected`] = true;
+      }
+    });
+
+    // Sync Bayesian priors
+    for (const [id, prob] of Object.entries(this.bayesian.priors)) {
+      if (prob > 0.5) {
+        newBeliefs[`${id}_is_confirmed`] = true;
+        // Specific inferences
+        if (id.startsWith('monster_')) newBeliefs[`${id}_is_elite`] = true;
+        if (id.startsWith('potion_') || id.startsWith('amulet_')) newBeliefs[`${id}_is_beneficial`] = true;
+      } else if (prob < 0.2) {
+        newBeliefs[`${id}_is_confirmed`] = false;
+      }
+    }
+
+    this.bdi.beliefs = newBeliefs;
+  }
+
+  recalculateDesirePriorities(explorationPercentage: number) {
+    const isHurt = (this.state.rogue.hp || 0) < 60;
+    const hasPotion = (this.state.rogue.potions || 0) > 0;
+
+    const descendDesire = this.bdi.desires.find(d => d.name === 'Descend');
+    const exploreDesire = this.bdi.desires.find(d => d.name === 'Explore Floor');
+    const getAmuletDesire = this.bdi.desires.find(d => d.name === 'Get Amulet');
+    const healDesire = this.bdi.desires.find(d => d.name === 'Heal');
+
+    if (isHurt) {
+      if (descendDesire) descendDesire.priority = 95;
+      if (getAmuletDesire) getAmuletDesire.priority = 95;
+      
+      // Scale Unlock Door desires when hurt
+      this.bdi.desires.forEach(d => {
+        if (d.name.startsWith('Unlock door_')) {
+          d.priority = 90;
+        }
+      });
+
+      if (exploreDesire) exploreDesire.priority = 10;
+      if (healDesire) healDesire.priority = hasPotion ? 98 : 80;
+    } else {
+      // Priority of descending/amulet increases as exploration progresses
+      if (descendDesire) descendDesire.priority = Math.max(10, explorationPercentage);
+      if (getAmuletDesire) getAmuletDesire.priority = Math.max(10, explorationPercentage);
+      
+      // Scale Unlock Door desires as well
+      this.bdi.desires.forEach(d => {
+        if (d.name.startsWith('Unlock door_')) {
+          d.priority = Math.max(25, explorationPercentage);
+        }
+      });
+
+      // Priority of exploration scales inversely with percentage explored
+      if (exploreDesire) exploreDesire.priority = Math.max(10, 100 - explorationPercentage);
+      if (healDesire) healDesire.priority = 90;
+    }
+  }
+
   tick() {
     if (!this.bdi.beliefs.is_alive) return;
     if (this.bdi.beliefs.has_amulet) return;
 
     this.state.turn++;
+    const turnThoughts: string[] = [];
     
-    // Add a separator for the new turn in thoughts history
-    if (this.state.thoughts.length > 50) this.state.thoughts.shift(); // Keep last 50
-    this.state.thoughts.push(`--- TURN ${this.state.turn} ---`);
-    
-    // Belief summary
-    const keyStatus = this.bdi.beliefs.has_key ? "Have Key" : "Need Key";
-    const amuletStatus = this.bdi.beliefs.has_amulet ? "Have Amulet" : "Searching for Amulet";
-    this.state.thoughts.push(`Beliefs: ${keyStatus}, ${amuletStatus}, HP: ${this.state.rogue.hp}`);
-
     // 1. Sense
-    const { newDiscovery, monsterVisible } = this.senseAndPerceive();
+    this.senseAndPerceive();
     this.processAuditorySignals();
     this.evaluateProbabilities();
 
@@ -1116,12 +1167,26 @@ export class GameEngine {
     const exploredWalkable = this.state.grid.flat().filter(f => f.isExplored && !f.traits.includes('wall')).length;
     const explorationPercentage = (exploredWalkable / totalWalkable) * 100;
 
+    // PIPELINE: Synchronize KG/Bayesian -> BDI Beliefs
+    this.synchronizeBeliefs();
+
+    // PIPELINE: Recalculate Priorities (extracted from BDI module)
+    this.recalculateDesirePriorities(explorationPercentage);
+
+    // Belief summary for thoughts
+    const keyStatus = this.bdi.beliefs.has_key ? "Have Key" : "Need Key";
+    const amuletStatus = this.bdi.beliefs.has_amulet ? "Have Amulet" : "Searching for Amulet";
+    turnThoughts.push(`Beliefs: ${keyStatus}, ${amuletStatus}, HP: ${this.state.rogue.hp}`);
+
+    // Summary of threats for perception logic
+    const monsterVisible = this.state.entities.some(e => (e.traits.includes('large') && e.traits.includes('fast')) && e.hp! > 0 && e.isVisible);
+
     this.bdi.perceive({
       hp: this.state.rogue.hp || 0,
       maxHp: 100,
       potions: this.state.rogue.potions || 0,
       monsterVisible,
-      newDiscovery,
+      newDiscovery: false, 
       explorationPercentage
     });
 
@@ -1130,57 +1195,70 @@ export class GameEngine {
     
     // Re-evaluate plan if empty
     if (this.bdi.currentPlan.length === 0) {
-      this.state.thoughts.push("Deliberating on next goal...");
       this.bdi.deliberate(actions, (targetId: string) => {
         const target = this.state.entities.find(e => e.id === targetId);
         if (!target) return Infinity;
-        return Math.max(Math.abs(this.state.rogue.pos.x - target.pos.x), Math.abs(this.state.rogue.pos.y - target.pos.y));
+        const path = this.findPath(this.state.rogue.pos, target.pos, true);
+        return path ? path.length : Infinity;
       });
       if (this.bdi.intention) {
         this.log(`Formed Intention: ${this.bdi.intention.name}`);
         this.log(`Plan: ${this.bdi.currentPlan.map(a => a.name).join(' -> ')}`);
         
-        this.state.thoughts.push(`Intention: ${this.bdi.intention.name} (Priority: ${this.bdi.intention.priority})`);
-        this.state.thoughts.push(`Strategy: ${this.bdi.currentPlan.map(a => a.name).join(' → ')}`);
+        turnThoughts.push(`Intention: ${this.bdi.intention.name} (Priority: ${this.bdi.intention.priority.toFixed(1)})`);
+        turnThoughts.push(`Strategy: ${this.bdi.currentPlan.map(a => a.name).join(' → ')}`);
       } else {
-        // If all desires are met, check if we should explore
-        const exploreAction = actions.find(a => a.name === 'Explore');
-        if (exploreAction) {
-           this.log("No valid plan found. Exploring...");
-           this.state.thoughts.push("Status: No valid plan found. Reverting to exploration.");
-           this.bdi.currentPlan = [exploreAction];
-        } else {
-           this.log("No valid plan found and floor explored. Waiting...");
-           this.state.thoughts.push("Status: No valid plan found and floor explored. Waiting for next event.");
-        }
+        this.log("No valid plan found. Waiting...");
+        turnThoughts.push("Status: No valid plan found. Waiting for next event.");
       }
     } else {
-      this.state.thoughts.push(`Continuing Plan: ${this.bdi.currentPlan.map(a => a.name).join(' → ')}`);
+      turnThoughts.push(`Continuing Plan: ${this.bdi.currentPlan.map(a => a.name).join(' → ')}`);
     }
 
     // 3. Act
     const intent = this.bdi.executeNextAction();
     if (intent) {
       if ('reason' in intent && intent.reason) {
-        this.state.thoughts.push(`Action: ${intent.type} (${intent.reason})`);
+        turnThoughts.push(`Action: ${intent.type} (${intent.reason})`);
       } else {
-        this.state.thoughts.push(`Action: ${intent.type}`);
+        turnThoughts.push(`Action: ${intent.type}`);
       }
       this.resolveIntent(intent);
       // Force replan after an action completes to ensure we adapt to new knowledge
       this.bdi.currentPlan = []; 
     }
 
+    // COMMIT THOUGHTS IF CHANGED
+    // Compare turnThoughts with this.state.lastThoughts (excluding Turn Header)
+    const hasChanged = turnThoughts.length !== this.state.lastThoughts.length || 
+                       turnThoughts.some((val, index) => val !== this.state.lastThoughts[index]);
+
+    if (hasChanged) {
+      // Reorder turnThoughts to ensure logical flow in the reversed UI
+      // Original: [Beliefs, Intention, Strategy, Action]
+      // Target display order: [Turn Header, Beliefs, Intention, Strategy, Action]
+      // Since UI reverses, array needs to be: [Action, Strategy, Intention, Beliefs, Turn Header]
+      
+      const reversedTurnThoughts = [...turnThoughts].reverse();
+      const newEntries = [...reversedTurnThoughts, `--- TURN ${this.state.turn} ---`];
+      
+      this.state.thoughts.push(...newEntries);
+      this.state.lastThoughts = turnThoughts;
+
+      // Keep thought log size manageable
+      if (this.state.thoughts.length > 200) {
+        this.state.thoughts = this.state.thoughts.slice(-200);
+      }
+    }
+
     // 4. Environment / Monster Turn
     for (const e of this.state.entities) {
       if (e.traits.includes('large') && e.traits.includes('fast') && e.hp! > 0) {
-        const dist = Math.max(Math.abs(this.state.rogue.pos.x - e.pos.x), Math.abs(this.state.rogue.pos.y - e.pos.y));
+        const dist = Math.abs(this.state.rogue.pos.x - e.pos.x) + Math.abs(this.state.rogue.pos.y - e.pos.y);
         if (dist === 1) {
           this.log("Monster attacks you for 10 damage!");
           this.state.rogue.hp! -= 10;
-          this.bdi.updateBeliefs({ hp_low: this.state.rogue.hp! < 60 });
           if (this.state.rogue.hp! <= 0) {
-            this.bdi.updateBeliefs({ is_alive: false });
             this.log("You died.");
           }
         } else if (dist < 5 && e.isVisible) {

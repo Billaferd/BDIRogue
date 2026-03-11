@@ -25,4 +25,5 @@ export interface GameState {
   frontierTiles: Position[];
   unreachableFrontier: Position[];
   thoughts: string[];
+  lastThoughts: string[];
 }

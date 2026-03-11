@@ -29,7 +29,6 @@ export class BDIAgent {
     const logs: string[] = [];
     const isHurt = env.hp < 60;
     const hasPotion = env.potions > 0;
-    const explorationPercentage = env.explorationPercentage || 0; // Assuming this is passed in env
 
     const oldMonsterThreat = this.beliefs.monster_threat;
 
@@ -49,42 +48,6 @@ export class BDIAgent {
       this.currentPlan = [];
     }
 
-    // Recalculate priority values
-    const descendDesire = this.desires.find(d => d.name === 'Descend');
-    const exploreDesire = this.desires.find(d => d.name === 'Explore Floor');
-    const getAmuletDesire = this.desires.find(d => d.name === 'Get Amulet');
-    const healDesire = this.desires.find(d => d.name === 'Heal');
-
-    if (isHurt) {
-      if (descendDesire) descendDesire.priority = 95;
-      if (getAmuletDesire) getAmuletDesire.priority = 95;
-      
-      // Scale Unlock Door desires when hurt
-      this.desires.forEach(d => {
-        if (d.name.startsWith('Unlock door_')) {
-          d.priority = 90;
-        }
-      });
-
-      if (exploreDesire) exploreDesire.priority = 10;
-      if (healDesire) healDesire.priority = hasPotion ? 98 : 80;
-    } else {
-      // Priority of descending/amulet increases as exploration progresses
-      if (descendDesire) descendDesire.priority = Math.max(10, explorationPercentage);
-      if (getAmuletDesire) getAmuletDesire.priority = Math.max(10, explorationPercentage);
-      
-      // Scale Unlock Door desires as well
-      this.desires.forEach(d => {
-        if (d.name.startsWith('Unlock door_')) {
-          d.priority = Math.max(25, explorationPercentage);
-        }
-      });
-
-      // Priority of exploration scales inversely with percentage explored
-      if (exploreDesire) exploreDesire.priority = Math.max(10, 100 - explorationPercentage);
-      if (healDesire) healDesire.priority = 90;
-    }
-
     return { logMessages: logs };
   }
 
@@ -93,7 +56,9 @@ export class BDIAgent {
   }
 
   addDesire(desire: Desire) {
-    this.desires.push(desire);
+    if (!this.desires.some(d => d.name === desire.name)) {
+      this.desires.push(desire);
+    }
   }
 
   deliberate(actions: GOAPAction[], distanceCalculator?: (targetId: string) => number) {
