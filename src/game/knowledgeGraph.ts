@@ -3,12 +3,20 @@ export type Triple = { subject: string; predicate: string; object: string };
 export class KnowledgeGraph {
   triples: Triple[] = [];
 
-  add(subject: string, predicate: string, object: string) {
+  /**
+   * Adds a triple. Multiple objects can exist for the same subject-predicate pair.
+   * Useful for traits, types, and other non-mutually exclusive relationships.
+   */
+  append(subject: string, predicate: string, object: string) {
     if (!this.has(subject, predicate, object)) {
       this.triples.push({ subject, predicate, object });
     }
   }
 
+  /**
+   * Sets a singular value for a subject-predicate pair.
+   * Overwrites any existing triples with the same subject and predicate.
+   */
   set(subject: string, predicate: string, object: string) {
     // Remove all existing triples with the same subject and predicate
     this.triples = this.triples.filter(

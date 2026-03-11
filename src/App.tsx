@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { GameEngine } from "./game/engine";
+import { DEFAULT_AGENT_CONFIG } from "./game/types";
 import { GridMap } from "./components/GridMap";
 import { AgentStatePanel } from "./components/AgentStatePanel";
 import { ThoughtPanel } from "./components/ThoughtPanel";
 import { Play, Pause, StepForward, RotateCcw } from "lucide-react";
 
 export default function App() {
-  const [engine, setEngine] = useState<GameEngine>(new GameEngine());
+  const [engine, setEngine] = useState<GameEngine>(new GameEngine(DEFAULT_AGENT_CONFIG));
   const [isPlaying, setIsPlaying] = useState(false);
   const [tickRate, setTickRate] = useState(500);
   const [, setRenderTrigger] = useState(0); // Force re-render
@@ -33,7 +34,7 @@ export default function App() {
 
   const handleReset = () => {
     setIsPlaying(false);
-    const newEngine = new GameEngine();
+    const newEngine = new GameEngine(DEFAULT_AGENT_CONFIG);
     newEngine.onUpdate = () => setRenderTrigger((prev) => prev + 1);
     setEngine(newEngine);
   };
